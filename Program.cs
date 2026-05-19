@@ -166,13 +166,14 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
         if (file == null || file.Length == 0)
             return Results.BadRequest("Файл не выбран");
 
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        var timestamp  = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        var presetName = "movex_upload";
 
         // Cloudinary signed upload: параметры строго в алфавитном порядке
-        // public_id < timestamp — правильный порядок
+        // public_id < timestamp < upload_preset
         var toSign = string.IsNullOrEmpty(publicId)
-            ? $"timestamp={timestamp}{apiSecret}"
-            : $"public_id={publicId}&timestamp={timestamp}{apiSecret}";
+            ? $"timestamp={timestamp}&upload_preset={presetName}{apiSecret}"
+            : $"public_id={publicId}&timestamp={timestamp}&upload_preset={presetName}{apiSecret}";
 
         var signature = Sha1Hex(toSign);
 
@@ -184,12 +185,13 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
         httpClient.Timeout   = TimeSpan.FromSeconds(60);
 
         using var content = new MultipartFormDataContent();
-        content.Add(new StreamContent(ms),           "file",      file.FileName);
-        content.Add(new StringContent(apiKey),       "api_key");
-        content.Add(new StringContent(timestamp),    "timestamp");
-        content.Add(new StringContent(signature),    "signature");
+        content.Add(new StreamContent(ms),              "file",          file.FileName);
+        content.Add(new StringContent(apiKey),          "api_key");
+        content.Add(new StringContent(timestamp),       "timestamp");
+        content.Add(new StringContent(signature),       "signature");
+        content.Add(new StringContent(presetName),      "upload_preset");
         if (!string.IsNullOrEmpty(publicId))
-            content.Add(new StringContent(publicId), "public_id");
+            content.Add(new StringContent(publicId),    "public_id");
 
         var response = await httpClient.PostAsync(
             $"https://api.cloudinary.com/v1_1/{cloudName}/image/upload", content);
@@ -240,4 +242,3 @@ app.Run();
 
 record UpdateMemberRequest(string? Email, string? Address, string? FitnessGoal, string? Notes);
 record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote);
-
