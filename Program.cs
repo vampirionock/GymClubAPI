@@ -447,6 +447,101 @@ app.MapGet("/api/health", async () =>
     }
 });
 
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ЗАГРУЗКА ФОТО В CLOUDINARY
+//  POST /api/photos/upload
+//  Form: file (multipart), public_id (string)
+// ════════════════════════════════════════════════════════════════════════════
+app.MapPost("/api/photos/upload", async (HttpRequest request) =>
+{
+    if (!request.HasFormContentType)
+        return Results.BadRequest("Нужен multipart/form-data");
+
+    var form = await request.ReadFormAsync();
+    var file = form.Files.GetFile("file");
+    var publicId = form["public_id"].ToString();
+
+    if (file == null || file.Length == 0)
+        return Results.BadRequest("Файл не выбран");
+
+    var cloudName  = "dvboll7as";
+    var apiKey     = "453577598156417";
+    var apiSecret  = "-DFCIRiHVyTkUpmj8YxjzrIVUWw";
+    var folder     = "movex";
+
+    // Формируем подпись
+    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+    var toSign    = string.IsNullOrEmpty(publicId)
+        ? $"folder={folder}&timestamp={timestamp}{apiSecret}"
+        : $"folder={folder}&public_id={publicId}&timestamp={timestamp}{apiSecret}";
+
+    using var sha1 = System.Security.Cryptography.SHA1.Create();
+    var sigBytes   = sha1.ComputeHash(System.Text.Encoding.UTF8.GetBytes(toSign));
+    var signature  = Convert.ToHexString(sigBytes).ToLowerInvariant();
+
+    using var ms = new MemoryStream();
+    await file.CopyToAsync(ms);
+    ms.Position = 0;
+
+    using var client  = new HttpClient();
+    using var content = new MultipartFormDataContent();
+    content.Add(new StreamContent(ms),  "file",      file.FileName);
+    content.Add(new StringContent(apiKey),            "api_key");
+    content.Add(new StringContent(timestamp),         "timestamp");
+    content.Add(new StringContent(signature),         "signature");
+    content.Add(new StringContent(folder),            "folder");
+    if (!string.IsNullOrEmpty(publicId))
+        content.Add(new StringContent(publicId),      "public_id");
+
+    var response = await client.PostAsync(
+        $"https://api.cloudinary.com/v1_1/{cloudName}/image/upload", content);
+
+    var json = await response.Content.ReadAsStringAsync();
+
+    if (!response.IsSuccessStatusCode)
+        return Results.Problem(json);
+
+    // Возвращаем URL загруженного фото
+    using var doc = System.Text.Json.JsonDocument.Parse(json);
+    var url = doc.RootElement.GetProperty("secure_url").GetString();
+    var pid = doc.RootElement.GetProperty("public_id").GetString();
+
+    return Results.Ok(new { url, public_id = pid });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  УДАЛЕНИЕ ФОТО ИЗ CLOUDINARY
+//  DELETE /api/photos/{public_id}
+// ════════════════════════════════════════════════════════════════════════════
+app.MapDelete("/api/photos/{**publicId}", async (string publicId) =>
+{
+    var cloudName = "dvboll7as";
+    var apiKey    = "453577598156417";
+    var apiSecret = "-DFCIRiHVyTkUpmj8YxjzrIVUWw";
+
+    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+    var toSign    = $"public_id={publicId}&timestamp={timestamp}{apiSecret}";
+
+    using var sha1    = System.Security.Cryptography.SHA1.Create();
+    var sigBytes      = sha1.ComputeHash(System.Text.Encoding.UTF8.GetBytes(toSign));
+    var signature     = Convert.ToHexString(sigBytes).ToLowerInvariant();
+
+    using var client  = new HttpClient();
+    using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+    {
+        ["public_id"] = publicId,
+        ["api_key"]   = apiKey,
+        ["timestamp"] = timestamp,
+        ["signature"] = signature
+    });
+
+    var response = await client.PostAsync(
+        $"https://api.cloudinary.com/v1_1/{cloudName}/image/destroy", content);
+
+    return response.IsSuccessStatusCode ? Results.Ok() : Results.Problem("Ошибка удаления фото");
+});
+
 app.Run();
 
 // ── Вспомогательные модели запросов ─────────────────────────────────────────
