@@ -240,3 +240,4 @@ app.Run();
 
 record UpdateMemberRequest(string? Email, string? Address, string? FitnessGoal, string? Notes);
 record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote);
+
