@@ -4,7 +4,6 @@ using MySqlConnector;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── CORS: разрешаем любой origin ─────────────────────────────────────────────
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
@@ -16,16 +15,18 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 app.UseCors("AllowAll");
 
-// ── Строка подключения ───────────────────────────────────────────────────────
 var connStr   = builder.Configuration.GetConnectionString("GymClubDB")!;
 var photoRoot = builder.Configuration["PhotoPath"]
                 ?? Path.Combine(AppContext.BaseDirectory, "photo");
 MySqlConnection Db() => new MySqlConnection(connStr);
 
+// ── Cloudinary credentials ────────────────────────────────────────────────
+var cloudName = Environment.GetEnvironmentVariable("CLOUDINARY_CLOUD_NAME") ?? "dvboll7as";
+var apiKey    = Environment.GetEnvironmentVariable("CLOUDINARY_API_KEY")    ?? "453577598156417";
+var apiSecret = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET") ?? "-DFCIRiHVyTkUpmj8YxjzrIVUWw";
+
 // ════════════════════════════════════════════════════════════════════════════
 //  АВТОРИЗАЦИЯ
-//  POST /api/login
-//  Body: { "phone": "+37379123456" }
 // ════════════════════════════════════════════════════════════════════════════
 app.MapPost("/api/login", async (LoginRequest req) =>
 {
@@ -62,10 +63,6 @@ app.MapPost("/api/login", async (LoginRequest req) =>
     return Results.Ok(new LoginResponse { Found = false });
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ПРОФИЛЬ УЧАСТНИКА
-//  GET /api/members/{id}
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/members/{id:int}", async (int id) =>
 {
     using var db = Db();
@@ -74,25 +71,13 @@ app.MapGet("/api/members/{id:int}", async (int id) =>
     return member is null ? Results.NotFound() : Results.Ok(member);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  АБОНЕМЕНТЫ УЧАСТНИКА
-//  GET /api/members/{id}/memberships
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/members/{id:int}/memberships", async (int id) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            mm.MemberMembershipID,
-            mm.MemberID,
-            mm.PlanID,
-            mp.PlanName,
-            mp.Price,
-            mp.DurationMonths,
-            mm.StartDate,
-            mm.EndDate,
-            mm.Status,
-            mm.Comment
+        SELECT mm.MemberMembershipID, mm.MemberID, mm.PlanID,
+               mp.PlanName, mp.Price, mp.DurationMonths,
+               mm.StartDate, mm.EndDate, mm.Status, mm.Comment
         FROM MemberMemberships mm
         JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
         WHERE mm.MemberID = @id
@@ -102,25 +87,14 @@ app.MapGet("/api/members/{id:int}/memberships", async (int id) =>
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ПОСЕЩЕНИЯ УЧАСТНИКА
-//  GET /api/members/{id}/visits?limit=20
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/members/{id:int}/visits", async (int id, int limit = 20) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            v.VisitID,
-            v.MemberID,
-            m.FullName  AS MemberName,
-            v.TrainerID,
-            t.FullName  AS TrainerName,
-            v.ProgramID,
-            wp.ProgramName,
-            v.VisitDate,
-            v.VisitType,
-            v.ResultNote
+        SELECT v.VisitID, v.MemberID, m.FullName AS MemberName,
+               v.TrainerID, t.FullName AS TrainerName,
+               v.ProgramID, wp.ProgramName,
+               v.VisitDate, v.VisitType, v.ResultNote
         FROM Visits v
         JOIN Members m ON v.MemberID = m.MemberID
         LEFT JOIN Trainers t ON v.TrainerID = t.TrainerID
@@ -133,10 +107,6 @@ app.MapGet("/api/members/{id:int}/visits", async (int id, int limit = 20) =>
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ПРОФИЛЬ ТРЕНЕРА
-//  GET /api/trainers/{id}
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/trainers/{id:int}", async (int id) =>
 {
     using var db = Db();
@@ -145,10 +115,6 @@ app.MapGet("/api/trainers/{id:int}", async (int id) =>
     return trainer is null ? Results.NotFound() : Results.Ok(trainer);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  СПИСОК ВСЕХ ТРЕНЕРОВ
-//  GET /api/trainers
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/trainers", async () =>
 {
     using var db = Db();
@@ -156,25 +122,14 @@ app.MapGet("/api/trainers", async () =>
     return Results.Ok(trainers);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ТРЕНИРОВКИ ТРЕНЕРА
-//  GET /api/trainers/{id}/visits?limit=20
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/trainers/{id:int}/visits", async (int id, int limit = 20) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            v.VisitID,
-            v.MemberID,
-            m.FullName  AS MemberName,
-            v.TrainerID,
-            t.FullName  AS TrainerName,
-            v.ProgramID,
-            wp.ProgramName,
-            v.VisitDate,
-            v.VisitType,
-            v.ResultNote
+        SELECT v.VisitID, v.MemberID, m.FullName AS MemberName,
+               v.TrainerID, t.FullName AS TrainerName,
+               v.ProgramID, wp.ProgramName,
+               v.VisitDate, v.VisitType, v.ResultNote
         FROM Visits v
         JOIN Members m ON v.MemberID = m.MemberID
         LEFT JOIN Trainers t ON v.TrainerID = t.TrainerID
@@ -187,23 +142,13 @@ app.MapGet("/api/trainers/{id:int}/visits", async (int id, int limit = 20) =>
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ПРОГРАММЫ ТРЕНЕРА
-//  GET /api/trainers/{id}/programs
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/trainers/{id:int}/programs", async (int id) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            wp.ProgramID,
-            wp.ProgramName,
-            wp.TrainerID,
-            t.FullName AS TrainerName,
-            wp.DifficultyLevel,
-            wp.DurationWeeks,
-            wp.Goal,
-            wp.Description
+        SELECT wp.ProgramID, wp.ProgramName, wp.TrainerID,
+               t.FullName AS TrainerName, wp.DifficultyLevel,
+               wp.DurationWeeks, wp.Goal, wp.Description
         FROM WorkoutPrograms wp
         JOIN Trainers t ON wp.TrainerID = t.TrainerID
         WHERE wp.TrainerID = @id
@@ -213,35 +158,20 @@ app.MapGet("/api/trainers/{id:int}/programs", async (int id) =>
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  СПИСОК ТАРИФНЫХ ПЛАНОВ
-//  GET /api/plans
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/plans", async () =>
 {
     using var db = Db();
-    var plans = await db.QueryAsync<MembershipPlan>(
-        "SELECT * FROM MembershipPlans ORDER BY Price");
+    var plans = await db.QueryAsync<MembershipPlan>("SELECT * FROM MembershipPlans ORDER BY Price");
     return Results.Ok(plans);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  СПИСОК ВСЕХ ПРОГРАММ
-//  GET /api/programs
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/programs", async () =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            wp.ProgramID,
-            wp.ProgramName,
-            wp.TrainerID,
-            t.FullName AS TrainerName,
-            wp.DifficultyLevel,
-            wp.DurationWeeks,
-            wp.Goal,
-            wp.Description
+        SELECT wp.ProgramID, wp.ProgramName, wp.TrainerID,
+               t.FullName AS TrainerName, wp.DifficultyLevel,
+               wp.DurationWeeks, wp.Goal, wp.Description
         FROM WorkoutPrograms wp
         JOIN Trainers t ON wp.TrainerID = t.TrainerID
         ORDER BY wp.DifficultyLevel, wp.ProgramName
@@ -250,46 +180,27 @@ app.MapGet("/api/programs", async () =>
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ОБНОВИТЬ ПРОФИЛЬ УЧАСТНИКА
-//  PUT /api/members/{id}
-// ════════════════════════════════════════════════════════════════════════════
 app.MapPut("/api/members/{id:int}", async (int id, UpdateMemberRequest req) =>
 {
     using var db = Db();
     var sql = """
         UPDATE Members
-        SET Email       = @Email,
-            Address     = @Address,
-            FitnessGoal = @FitnessGoal,
-            Notes       = @Notes
-        WHERE MemberID  = @id
+        SET Email = @Email, Address = @Address,
+            FitnessGoal = @FitnessGoal, Notes = @Notes
+        WHERE MemberID = @id
         """;
-    var rows = await db.ExecuteAsync(sql, new
-    {
-        req.Email, req.Address, req.FitnessGoal, req.Notes, id
-    });
+    var rows = await db.ExecuteAsync(sql, new { req.Email, req.Address, req.FitnessGoal, req.Notes, id });
     return rows > 0
         ? Results.Ok(new { success = true, message = "Профиль обновлён" })
         : Results.NotFound(new { success = false, message = "Участник не найден" });
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  КЛИЕНТЫ ТРЕНЕРА (список участников)
-//  GET /api/trainers/{id}/members
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/trainers/{id:int}/members", async (int id) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            m.MemberID,
-            m.FullName,
-            m.Phone,
-            m.Email,
-            m.Gender,
-            m.FitnessGoal,
-            COUNT(v.VisitID) AS TotalVisits
+        SELECT m.MemberID, m.FullName, m.Phone, m.Email, m.Gender,
+               m.FitnessGoal, COUNT(v.VisitID) AS TotalVisits
         FROM Members m
         JOIN Visits v ON m.MemberID = v.MemberID
         WHERE v.TrainerID = @id
@@ -300,50 +211,31 @@ app.MapGet("/api/trainers/{id:int}/members", async (int id) =>
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  КЛИЕНТЫ ТРЕНЕРА С ОСТАТКОМ ПОСЕЩЕНИЙ
-//  GET /api/trainers/{id}/clients
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/trainers/{id:int}/clients", async (int id) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            m.MemberID,
-            m.FullName,
-            m.Phone,
-            m.Photo,
-            m.FitnessGoal,
-            mm.Status        AS MembershipStatus,
-            mp.PlanName,
-            mp.VisitLimit,
-            mm.EndDate,
-            (SELECT COUNT(*) FROM Visits v2
-             WHERE v2.MemberID  = m.MemberID
-               AND v2.TrainerID = @id
-               AND mm.StartDate IS NOT NULL
-               AND v2.VisitDate >= mm.StartDate
-               AND v2.VisitDate <= IFNULL(mm.EndDate, NOW())
-            ) AS UsedVisits
+        SELECT m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
+               mm.Status AS MembershipStatus, mp.PlanName, mp.VisitLimit, mm.EndDate,
+               (SELECT COUNT(*) FROM Visits v2
+                WHERE v2.MemberID = m.MemberID AND v2.TrainerID = @id
+                  AND mm.StartDate IS NOT NULL
+                  AND v2.VisitDate >= mm.StartDate
+                  AND v2.VisitDate <= IFNULL(mm.EndDate, NOW())
+               ) AS UsedVisits
         FROM Members m
         JOIN Visits v ON m.MemberID = v.MemberID AND v.TrainerID = @id
         LEFT JOIN MemberMemberships mm ON mm.MemberID = m.MemberID
-            AND mm.Status = 'Активен'
-            AND mm.EndDate >= CURDATE()
+            AND mm.Status = 'Активен' AND mm.EndDate >= CURDATE()
         LEFT JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
-        GROUP BY
-            m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
-            mm.Status, mp.PlanName, mp.VisitLimit, mm.EndDate, mm.StartDate
+        GROUP BY m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
+                 mm.Status, mp.PlanName, mp.VisitLimit, mm.EndDate, mm.StartDate
         ORDER BY m.FullName
         """;
     var result = await db.QueryAsync(sql, new { id });
     return Results.Ok(result);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ОТМЕТИТЬ ТРЕНИРОВКУ
-//  POST /api/visits
-// ════════════════════════════════════════════════════════════════════════════
 app.MapPost("/api/visits", async (CreateVisitRequest req) =>
 {
     using var db = Db();
@@ -354,41 +246,24 @@ app.MapPost("/api/visits", async (CreateVisitRequest req) =>
         """;
     var newId = await db.ExecuteScalarAsync<long>(sql, new
     {
-        req.MemberID,
-        req.TrainerID,
-        req.ProgramID,
-        VisitDate  = DateTime.Now,
-        req.VisitType,
-        req.ResultNote
+        req.MemberID, req.TrainerID, req.ProgramID,
+        VisitDate = DateTime.Now, req.VisitType, req.ResultNote
     });
     return Results.Ok(new { success = true, visitID = newId, message = "Тренировка отмечена" });
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ТРЕНЕР УЧАСТНИКА
-//  GET /api/members/{id}/trainer
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/members/{id:int}/trainer", async (int id) =>
 {
     using var db = Db();
     var sql = """
-        SELECT
-            t.TrainerID,
-            t.FullName,
-            t.Phone,
-            t.Email,
-            t.Specialization,
-            t.ExperienceYears,
-            t.Bio,
-            t.WorkSchedule,
-            t.Photo,
-            COUNT(v.VisitID) AS SessionCount
+        SELECT t.TrainerID, t.FullName, t.Phone, t.Email, t.Specialization,
+               t.ExperienceYears, t.Bio, t.WorkSchedule, t.Photo,
+               COUNT(v.VisitID) AS SessionCount
         FROM Visits v
         JOIN Trainers t ON v.TrainerID = t.TrainerID
         WHERE v.MemberID = @id AND v.TrainerID IS NOT NULL
-        GROUP BY
-            t.TrainerID, t.FullName, t.Phone, t.Email,
-            t.Specialization, t.ExperienceYears, t.Bio, t.WorkSchedule, t.Photo
+        GROUP BY t.TrainerID, t.FullName, t.Phone, t.Email,
+                 t.Specialization, t.ExperienceYears, t.Bio, t.WorkSchedule, t.Photo
         ORDER BY COUNT(v.VisitID) DESC
         LIMIT 1
         """;
@@ -398,48 +273,13 @@ app.MapGet("/api/members/{id:int}/trainer", async (int id) =>
         : Results.Ok(new { found = true, trainer });
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  ФОТО
-//  GET /api/photos/{role}/{filename}
-// ════════════════════════════════════════════════════════════════════════════
-app.MapGet("/api/photos/{role}/{filename}", (string role, string filename) =>
-{
-    var subfolder = role == "trainers" ? "trainers" : "visitors";
-    var filePath  = Path.Combine(photoRoot, subfolder, Path.GetFileName(filename));
-
-    if (!File.Exists(filePath))
-        return Results.NotFound(new { message = "Фото не найдено" });
-
-    var ext  = Path.GetExtension(filename).ToLower();
-    var mime = ext switch
-    {
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".png"            => "image/png",
-        ".gif"            => "image/gif",
-        ".bmp"            => "image/bmp",
-        _                 => "application/octet-stream"
-    };
-
-    var bytes = File.ReadAllBytes(filePath);
-    return Results.File(bytes, mime);
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-//  ПРОВЕРКА РАБОТЫ API
-//  GET /api/health
-// ════════════════════════════════════════════════════════════════════════════
 app.MapGet("/api/health", async () =>
 {
     try
     {
         using var db = Db();
         await db.OpenAsync();
-        return Results.Ok(new
-        {
-            status  = "ok",
-            message = "API работает, БД подключена (Railway MySQL)",
-            time    = DateTime.Now
-        });
+        return Results.Ok(new { status = "ok", message = "API работает, БД подключена (Railway MySQL)", time = DateTime.Now });
     }
     catch (Exception ex)
     {
@@ -447,67 +287,70 @@ app.MapGet("/api/health", async () =>
     }
 });
 
-
 // ════════════════════════════════════════════════════════════════════════════
 //  ЗАГРУЗКА ФОТО В CLOUDINARY
 //  POST /api/photos/upload
-//  Form: file (multipart), public_id (string)
 // ════════════════════════════════════════════════════════════════════════════
 app.MapPost("/api/photos/upload", async (HttpRequest request) =>
 {
-    if (!request.HasFormContentType)
-        return Results.BadRequest("Нужен multipart/form-data");
+    try
+    {
+        if (!request.HasFormContentType)
+            return Results.BadRequest("Нужен multipart/form-data");
 
-    var form = await request.ReadFormAsync();
-    var file = form.Files.GetFile("file");
-    var publicId = form["public_id"].ToString();
+        var form     = await request.ReadFormAsync();
+        var file     = form.Files.GetFile("file");
+        var publicId = form["public_id"].ToString(); // e.g. "move/visitors/ivan_petrov"
 
-    if (file == null || file.Length == 0)
-        return Results.BadRequest("Файл не выбран");
+        if (file == null || file.Length == 0)
+            return Results.BadRequest("Файл не выбран");
 
-    var cloudName  = "dvboll7as";
-    var apiKey     = "453577598156417";
-    var apiSecret  = "-DFCIRiHVyTkUpmj8YxjzrIVUWw";
-    var folder     = "movex";
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
 
-    // Формируем подпись
-    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-    var toSign    = string.IsNullOrEmpty(publicId)
-        ? $"folder={folder}&timestamp={timestamp}{apiSecret}"
-        : $"folder={folder}&public_id={publicId}&timestamp={timestamp}{apiSecret}";
+        // Подпись: параметры в алфавитном порядке + secret
+        // public_id содержит полный путь включая папку
+        string toSign;
+        if (!string.IsNullOrEmpty(publicId))
+            toSign = $"public_id={publicId}&timestamp={timestamp}{apiSecret}";
+        else
+            toSign = $"timestamp={timestamp}{apiSecret}";
 
-    using var sha1 = System.Security.Cryptography.SHA1.Create();
-    var sigBytes   = sha1.ComputeHash(System.Text.Encoding.UTF8.GetBytes(toSign));
-    var signature  = Convert.ToHexString(sigBytes).ToLowerInvariant();
+        using var sha1     = System.Security.Cryptography.SHA1.Create();
+        var sigBytes       = sha1.ComputeHash(System.Text.Encoding.UTF8.GetBytes(toSign));
+        var signature      = Convert.ToHexString(sigBytes).ToLowerInvariant();
 
-    using var ms = new MemoryStream();
-    await file.CopyToAsync(ms);
-    ms.Position = 0;
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms);
+        ms.Position = 0;
 
-    using var client  = new HttpClient();
-    using var content = new MultipartFormDataContent();
-    content.Add(new StreamContent(ms),  "file",      file.FileName);
-    content.Add(new StringContent(apiKey),            "api_key");
-    content.Add(new StringContent(timestamp),         "timestamp");
-    content.Add(new StringContent(signature),         "signature");
-    content.Add(new StringContent(folder),            "folder");
-    if (!string.IsNullOrEmpty(publicId))
-        content.Add(new StringContent(publicId),      "public_id");
+        using var client  = new HttpClient();
+        client.Timeout    = TimeSpan.FromSeconds(60);
+        using var content = new MultipartFormDataContent();
+        content.Add(new StreamContent(ms), "file", file.FileName);
+        content.Add(new StringContent(apiKey),    "api_key");
+        content.Add(new StringContent(timestamp), "timestamp");
+        content.Add(new StringContent(signature), "signature");
+        if (!string.IsNullOrEmpty(publicId))
+            content.Add(new StringContent(publicId), "public_id");
 
-    var response = await client.PostAsync(
-        $"https://api.cloudinary.com/v1_1/{cloudName}/image/upload", content);
+        var response = await client.PostAsync(
+            $"https://api.cloudinary.com/v1_1/{cloudName}/image/upload", content);
 
-    var json = await response.Content.ReadAsStringAsync();
+        var json = await response.Content.ReadAsStringAsync();
 
-    if (!response.IsSuccessStatusCode)
-        return Results.Problem(json);
+        if (!response.IsSuccessStatusCode)
+            return Results.Problem(json);
 
-    // Возвращаем URL загруженного фото
-    using var doc = System.Text.Json.JsonDocument.Parse(json);
-    var url = doc.RootElement.GetProperty("secure_url").GetString();
-    var pid = doc.RootElement.GetProperty("public_id").GetString();
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var url = doc.RootElement.GetProperty("secure_url").GetString();
+        var pid = doc.RootElement.GetProperty("public_id").GetString();
 
-    return Results.Ok(new { url, public_id = pid });
+        return Results.Ok(new { url, public_id = pid });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Ошибка: {ex.Message}\n{ex.StackTrace}");
+    }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -516,10 +359,6 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
 // ════════════════════════════════════════════════════════════════════════════
 app.MapDelete("/api/photos/{**publicId}", async (string publicId) =>
 {
-    var cloudName = "dvboll7as";
-    var apiKey    = "453577598156417";
-    var apiSecret = "-DFCIRiHVyTkUpmj8YxjzrIVUWw";
-
     var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
     var toSign    = $"public_id={publicId}&timestamp={timestamp}{apiSecret}";
 
@@ -544,19 +383,5 @@ app.MapDelete("/api/photos/{**publicId}", async (string publicId) =>
 
 app.Run();
 
-// ── Вспомогательные модели запросов ─────────────────────────────────────────
-
-record UpdateMemberRequest(
-    string? Email,
-    string? Address,
-    string? FitnessGoal,
-    string? Notes
-);
-
-record CreateVisitRequest(
-    int    MemberID,
-    int    TrainerID,
-    int?   ProgramID,
-    string VisitType,
-    string? ResultNote
-);
+record UpdateMemberRequest(string? Email, string? Address, string? FitnessGoal, string? Notes);
+record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote);
