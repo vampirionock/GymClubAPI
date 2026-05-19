@@ -20,7 +20,7 @@ MySqlConnection Db() => new MySqlConnection(connStr);
 
 var cloudName = Environment.GetEnvironmentVariable("CLOUDINARY_CLOUD_NAME") ?? "dvboll7as";
 var apiKey    = Environment.GetEnvironmentVariable("CLOUDINARY_API_KEY")    ?? "453577598156417";
-var apiSecret = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET") ?? "-DFCIRiHVyTkUpmj8YxjzrIVUWw";
+var apiSecret = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET") ?? "-DFCIRiHVyTkUpmj8YxjzrlVUWw";
 
 // ── helper: SHA1 подпись ──────────────────────────────────────────────────
 static string Sha1Hex(string input)
