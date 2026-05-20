@@ -18,18 +18,6 @@ var photoRoot = builder.Configuration["PhotoPath"]
                 ?? Path.Combine(AppContext.BaseDirectory, "photo");
 MySqlConnection Db() => new MySqlConnection(connStr);
 
-var cloudName = Environment.GetEnvironmentVariable("CLOUDINARY_CLOUD_NAME") ?? "dvboll7as";
-var apiKey    = Environment.GetEnvironmentVariable("CLOUDINARY_API_KEY")    ?? "453577598156417";
-var apiSecret = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET") ?? "-DFCIRiHVyTkUpmj8YxjzrlVUWw";
-
-// ── helper: SHA1 подпись ──────────────────────────────────────────────────
-static string Sha1Hex(string input)
-{
-    using var sha = System.Security.Cryptography.SHA1.Create();
-    var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
-    return Convert.ToHexString(bytes).ToLowerInvariant();
-}
-
 app.MapPost("/api/login", async (LoginRequest req) =>
 {
     using var db = Db();
@@ -149,9 +137,13 @@ app.MapGet("/api/health", async () =>
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-//  ЗАГРУЗКА ФОТО В CLOUDINARY (signed upload)
+//  ЗАГРУЗКА ФОТО В SUPABASE STORAGE
 //  POST /api/photos/upload
 // ════════════════════════════════════════════════════════════════════════════
+var supabaseUrl = "https://cgivukurkmlnqdrtkvop.supabase.co";
+var supabaseKey = "sb_secret_NSXh0Q9MNFWRjzLK1YNkAA_nAflcbXM";
+var supabaseBucket = "photos";
+
 app.MapPost("/api/photos/upload", async (HttpRequest request) =>
 {
     try
@@ -161,79 +153,58 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
 
         var form     = await request.ReadFormAsync();
         var file     = form.Files.GetFile("file");
-        var publicId = form["public_id"].ToString(); // "move/visitors/ivan_petrov"
+        var filePath = form["file_path"].ToString(); // "visitors/ivan_petrov.jpg"
 
         if (file == null || file.Length == 0)
             return Results.BadRequest("Файл не выбран");
 
-        var timestamp  = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-        var presetName = "movex_upload";
-
-        // Cloudinary signed upload: параметры строго в алфавитном порядке
-        // public_id < timestamp < upload_preset
-        var toSign = string.IsNullOrEmpty(publicId)
-            ? $"timestamp={timestamp}&upload_preset={presetName}{apiSecret}"
-            : $"public_id={publicId}&timestamp={timestamp}&upload_preset={presetName}{apiSecret}";
-
-        var signature = Sha1Hex(toSign);
-
         using var ms = new MemoryStream();
         await file.CopyToAsync(ms);
-        ms.Position = 0;
+        var fileBytes = ms.ToArray();
+
+        string ext  = Path.GetExtension(file.FileName).ToLower();
+        string mime = ext == ".png" ? "image/png" : "image/jpeg";
 
         using var httpClient = new HttpClient();
         httpClient.Timeout   = TimeSpan.FromSeconds(60);
+        httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {supabaseKey}");
+        httpClient.DefaultRequestHeaders.Add("apikey", supabaseKey);
 
-        using var content = new MultipartFormDataContent();
-        content.Add(new StreamContent(ms),              "file",          file.FileName);
-        content.Add(new StringContent(apiKey),          "api_key");
-        content.Add(new StringContent(timestamp),       "timestamp");
-        content.Add(new StringContent(signature),       "signature");
-        content.Add(new StringContent(presetName),      "upload_preset");
-        if (!string.IsNullOrEmpty(publicId))
-            content.Add(new StringContent(publicId),    "public_id");
+        // Удаляем старый файл если существует
+        await httpClient.DeleteAsync($"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}");
+
+        var byteContent = new ByteArrayContent(fileBytes);
+        byteContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mime);
 
         var response = await httpClient.PostAsync(
-            $"https://api.cloudinary.com/v1_1/{cloudName}/image/upload", content);
+            $"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}", byteContent);
 
         var json = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
-            return Results.Problem($"Cloudinary error: {json}");
+            return Results.Problem($"Supabase error: {json}");
 
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-        var url = doc.RootElement.GetProperty("secure_url").GetString();
-        var pid = doc.RootElement.GetProperty("public_id").GetString();
-
-        return Results.Ok(new { url, public_id = pid });
+        string publicUrl = $"{supabaseUrl}/storage/v1/object/public/{supabaseBucket}/{filePath}";
+        return Results.Ok(new { url = publicUrl });
     }
     catch (Exception ex)
     {
-        return Results.Problem($"Ошибка: {ex.Message}\n{ex.StackTrace}");
+        return Results.Problem($"Ошибка: {ex.Message}");
     }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-//  УДАЛЕНИЕ ФОТО ИЗ CLOUDINARY
-//  DELETE /api/photos/{**publicId}
+//  УДАЛЕНИЕ ФОТО ИЗ SUPABASE STORAGE
+//  DELETE /api/photos/{**filePath}
 // ════════════════════════════════════════════════════════════════════════════
-app.MapDelete("/api/photos/{**publicId}", async (string publicId) =>
+app.MapDelete("/api/photos/{**filePath}", async (string filePath) =>
 {
-    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-    var toSign    = $"public_id={publicId}&timestamp={timestamp}{apiSecret}";
-    var signature = Sha1Hex(toSign);
-
     using var httpClient = new HttpClient();
-    using var content    = new FormUrlEncodedContent(new Dictionary<string, string>
-    {
-        ["public_id"] = publicId,
-        ["api_key"]   = apiKey,
-        ["timestamp"] = timestamp,
-        ["signature"] = signature
-    });
+    httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {supabaseKey}");
+    httpClient.DefaultRequestHeaders.Add("apikey", supabaseKey);
 
-    var response = await httpClient.PostAsync(
-        $"https://api.cloudinary.com/v1_1/{cloudName}/image/destroy", content);
+    var response = await httpClient.DeleteAsync(
+        $"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}");
 
     return response.IsSuccessStatusCode ? Results.Ok() : Results.Problem("Ошибка удаления фото");
 });
