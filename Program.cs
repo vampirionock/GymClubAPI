@@ -24,11 +24,11 @@ app.MapPost("/api/login", async (LoginRequest req) =>
     var member = await db.QueryFirstOrDefaultAsync<Member>(
         "SELECT * FROM Members WHERE Phone = @Phone", new { req.Phone });
     if (member != null)
-        return Results.Ok(new LoginResponse { Found=true, Role="member", Id=member.MemberID, FullName=member.FullName, Phone=member.Phone, Email=member.Email });
+        return Results.Ok(new LoginResponse { Found=true, Role="member", Id=member.MemberID, FullName=member.FullName, Phone=member.Phone, Email=member.Email, Photo=member.Photo });
     var trainer = await db.QueryFirstOrDefaultAsync<Trainer>(
         "SELECT * FROM Trainers WHERE Phone = @Phone", new { req.Phone });
     if (trainer != null)
-        return Results.Ok(new LoginResponse { Found=true, Role="trainer", Id=trainer.TrainerID, FullName=trainer.FullName, Phone=trainer.Phone, Email=trainer.Email });
+        return Results.Ok(new LoginResponse { Found=true, Role="trainer", Id=trainer.TrainerID, FullName=trainer.FullName, Phone=trainer.Phone, Email=trainer.Email, Photo=trainer.Photo });
     return Results.Ok(new LoginResponse { Found = false });
 });
 
