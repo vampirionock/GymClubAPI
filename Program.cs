@@ -37,8 +37,7 @@ app.MapPost("/api/login", async (LoginRequest req) =>
             Phone    = member.Phone,
             Email    = member.Email,
             Photo    = member.Photo,
-            Barcode  = member.BarcodeValue
-                       ?? $"GYM-{member.MemberID:D5}" // fallback на случай NULL
+            Barcode  = member.BarcodeValue ?? $"GYM-{member.MemberID:D5}"
         });
 
     var trainer = await db.QueryFirstOrDefaultAsync<Trainer>(
@@ -60,9 +59,6 @@ app.MapPost("/api/login", async (LoginRequest req) =>
 
 // ════════════════════════════════════════════════════════════════════════════
 //  ШТРИХКОД — проверка на входе в зал
-//  POST /api/barcode/verify
-//  Тело: { "barcodeValue": "GYM-00001" }
-//  Ответ: статус абонемента + имя участника
 // ════════════════════════════════════════════════════════════════════════════
 
 app.MapPost("/api/barcode/verify", async (BarcodeVerifyRequest req) =>
@@ -76,7 +72,6 @@ app.MapPost("/api/barcode/verify", async (BarcodeVerifyRequest req) =>
 
     using var db = Db();
 
-    // Ищем участника по штрихкоду
     var member = await db.QueryFirstOrDefaultAsync<Member>(
         "SELECT * FROM Members WHERE BarcodeValue = @barcodeValue",
         new { barcodeValue = req.BarcodeValue.Trim().ToUpper() });
@@ -88,7 +83,6 @@ app.MapPost("/api/barcode/verify", async (BarcodeVerifyRequest req) =>
             Message = "Участник не найден. Обратитесь на рецепцию."
         });
 
-    // Проверяем активный абонемент
     var sql = @"
         SELECT mm.MemberMembershipID, mm.Status, mm.EndDate,
                mp.PlanName, mp.VisitLimit,
@@ -115,7 +109,6 @@ app.MapPost("/api/barcode/verify", async (BarcodeVerifyRequest req) =>
             Message    = "Нет активного абонемента. Обратитесь на рецепцию."
         });
 
-    // Проверяем лимит посещений (если есть)
     if (membership.VisitLimit != null && membership.UsedVisits >= membership.VisitLimit)
         return Results.Ok(new BarcodeVerifyResponse
         {
@@ -126,7 +119,6 @@ app.MapPost("/api/barcode/verify", async (BarcodeVerifyRequest req) =>
             Message    = $"Лимит посещений исчерпан ({membership.UsedVisits}/{membership.VisitLimit})."
         });
 
-    // Всё в порядке — записываем посещение автоматически
     await db.ExecuteAsync(
         @"INSERT INTO Visits (MemberID, VisitDate, VisitType, ResultNote)
           VALUES (@memberId, NOW(), 'Самостоятельная тренировка', 'Вход через штрихкод')",
@@ -164,6 +156,7 @@ app.MapGet("/api/members/{id:int}/memberships", async (int id) =>
     using var db = Db();
     var sql = @"SELECT mm.MemberMembershipID, mm.MemberID, mm.PlanID,
                        mp.PlanName, mp.Price, mp.DurationMonths,
+                       mm.TrainerID, mm.SessionsUsed,
                        mm.StartDate, mm.EndDate, mm.Status, mm.Comment
                 FROM MemberMemberships mm
                 JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
@@ -261,27 +254,203 @@ app.MapGet("/api/trainers/{id:int}/members", async (int id) =>
     return Results.Ok(await db.QueryAsync(sql, new { id }));
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+//  ТРЕНЕР — КЛИЕНТЫ С АБОНЕМЕНТАМИ (обновлено)
+//  GET /api/trainers/{id}/clients
+//  Возвращает клиентов, чьи абонементы привязаны к этому тренеру.
+//  Показывает счётчик сессий из абонемента (SessionsUsed / VisitLimit).
+// ════════════════════════════════════════════════════════════════════════════
+
 app.MapGet("/api/trainers/{id:int}/clients", async (int id) =>
 {
     using var db = Db();
-    var sql = @"SELECT m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
-                       mm.Status AS MembershipStatus, mp.PlanName, mp.VisitLimit,
-                       mm.EndDate,
-                       (SELECT COUNT(*) FROM Visits v2
-                        WHERE v2.MemberID = m.MemberID AND v2.TrainerID = @id
-                          AND mm.StartDate IS NOT NULL
-                          AND v2.VisitDate >= mm.StartDate
-                          AND v2.VisitDate <= IFNULL(mm.EndDate, NOW())) AS UsedVisits
-                FROM Members m
-                JOIN Visits v ON m.MemberID = v.MemberID AND v.TrainerID = @id
-                LEFT JOIN MemberMemberships mm
-                    ON mm.MemberID = m.MemberID AND mm.Status = 'Активен' AND mm.EndDate >= CURDATE()
-                LEFT JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
-                GROUP BY m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
-                         mm.Status, mp.PlanName, mp.VisitLimit, mm.EndDate, mm.StartDate
-                ORDER BY m.FullName";
-    return Results.Ok(await db.QueryAsync(sql, new { id }));
+    var sql = @"
+        SELECT
+            m.MemberID,
+            m.FullName,
+            m.Phone,
+            m.Photo,
+            m.FitnessGoal,
+            mm.MemberMembershipID,
+            mp.PlanName,
+            mm.Status        AS MembershipStatus,
+            mm.EndDate,
+            mp.VisitLimit    AS SessionLimit,
+            mm.SessionsUsed
+        FROM MemberMemberships mm
+        JOIN Members m           ON mm.MemberID  = m.MemberID
+        JOIN MembershipPlans mp  ON mm.PlanID    = mp.PlanID
+        WHERE mm.TrainerID = @id
+          AND mm.Status    = 'Активен'
+          AND mm.EndDate   >= CURDATE()
+        ORDER BY m.FullName";
+
+    var clients = await db.QueryAsync<TrainerClient>(sql, new { id });
+    return Results.Ok(clients);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ТРЕНЕР — СПИСОК ВСЕХ КЛИЕНТОВ (включая без активного абонемента)
+//  GET /api/trainers/{id}/clients/all
+//  Все клиенты, у кого когда-либо был абонемент с этим тренером
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/trainers/{id:int}/clients/all", async (int id) =>
+{
+    using var db = Db();
+    var sql = @"
+        SELECT
+            m.MemberID,
+            m.FullName,
+            m.Phone,
+            m.Photo,
+            m.FitnessGoal,
+            mm.MemberMembershipID,
+            mp.PlanName,
+            mm.Status        AS MembershipStatus,
+            mm.EndDate,
+            mp.VisitLimit    AS SessionLimit,
+            mm.SessionsUsed
+        FROM MemberMemberships mm
+        JOIN Members m           ON mm.MemberID  = m.MemberID
+        JOIN MembershipPlans mp  ON mm.PlanID    = mp.PlanID
+        WHERE mm.TrainerID = @id
+        ORDER BY mm.Status DESC, m.FullName";
+
+    var clients = await db.QueryAsync<TrainerClient>(sql, new { id });
+    return Results.Ok(clients);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ТРЕНЕР — СПИСАТЬ ОДНУ СЕССИЮ
+//  POST /api/memberships/{membershipId}/use-session
+//  Вызывается когда тренер нажимает "Записать тренировку".
+//  Одновременно создаёт Visit и увеличивает SessionsUsed.
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/memberships/{membershipId:int}/use-session",
+    async (int membershipId, UseSessionRequest req) =>
+{
+    using var db = Db();
+
+    // 1. Загружаем абонемент
+    var membership = await db.QueryFirstOrDefaultAsync(@"
+        SELECT mm.MemberMembershipID, mm.MemberID, mm.TrainerID,
+               mm.Status, mm.EndDate, mm.SessionsUsed,
+               mp.VisitLimit, mp.PlanName
+        FROM MemberMemberships mm
+        JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
+        WHERE mm.MemberMembershipID = @membershipId",
+        new { membershipId });
+
+    if (membership == null)
+        return Results.NotFound(new { success = false, message = "Абонемент не найден." });
+
+    if (membership.Status != "Активен")
+        return Results.BadRequest(new { success = false, message = "Абонемент не активен." });
+
+    if (membership.EndDate < DateTime.Today)
+        return Results.BadRequest(new { success = false, message = "Срок абонемента истёк." });
+
+    // 2. Проверяем лимит сессий
+    if (membership.VisitLimit != null && membership.SessionsUsed >= membership.VisitLimit)
+        return Results.BadRequest(new
+        {
+            success = false,
+            message = $"Все сессии исчерпаны ({membership.SessionsUsed}/{membership.VisitLimit}). Клиенту нужен новый абонемент."
+        });
+
+    // 3. Определяем дату тренировки
+    var visitDate = req.VisitDate ?? DateTime.Now;
+
+    // 4. Создаём Visit
+    var visitId = await db.ExecuteScalarAsync<long>(@"
+        INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
+        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, 'Персональная тренировка', @ResultNote);
+        SELECT LAST_INSERT_ID();",
+        new
+        {
+            MemberID   = (int)membership.MemberID,
+            TrainerID  = (int)membership.TrainerID,
+            ProgramID  = req.ProgramID,
+            VisitDate  = visitDate,
+            ResultNote = req.ResultNote
+        });
+
+    // 5. Увеличиваем счётчик сессий в абонементе
+    await db.ExecuteAsync(@"
+        UPDATE MemberMemberships
+        SET SessionsUsed = SessionsUsed + 1
+        WHERE MemberMembershipID = @membershipId",
+        new { membershipId });
+
+    // 6. Считаем остаток
+    int newUsed = (int)membership.SessionsUsed + 1;
+    int? limit  = membership.VisitLimit != null ? (int?)membership.VisitLimit : null;
+    int? left   = limit.HasValue ? Math.Max(0, limit.Value - newUsed) : null;
+
+    return Results.Ok(new
+    {
+        success      = true,
+        visitId,
+        sessionsUsed = newUsed,
+        sessionLimit = limit,
+        sessionsLeft = left,
+        message      = left.HasValue
+            ? $"Тренировка записана. Осталось сессий: {left}"
+            : "Тренировка записана."
+    });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ТРЕНЕР — ИНФОРМАЦИЯ ОБ АБОНЕМЕНТЕ КЛИЕНТА
+//  GET /api/memberships/{membershipId}/session-info
+//  Быстрая проверка перед записью — сколько сессий осталось
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/memberships/{membershipId:int}/session-info", async (int membershipId) =>
+{
+    using var db = Db();
+    var info = await db.QueryFirstOrDefaultAsync(@"
+        SELECT mm.MemberMembershipID,
+               mm.MemberID,
+               m.FullName AS MemberName,
+               mm.TrainerID,
+               mm.Status,
+               mm.EndDate,
+               mm.SessionsUsed,
+               mp.VisitLimit AS SessionLimit,
+               mp.PlanName
+        FROM MemberMemberships mm
+        JOIN Members m          ON mm.MemberID = m.MemberID
+        JOIN MembershipPlans mp ON mm.PlanID   = mp.PlanID
+        WHERE mm.MemberMembershipID = @membershipId",
+        new { membershipId });
+
+    if (info == null) return Results.NotFound();
+
+    int used    = (int)info.SessionsUsed;
+    int? limit  = info.SessionLimit != null ? (int?)info.SessionLimit : null;
+    int? left   = limit.HasValue ? Math.Max(0, limit.Value - used) : null;
+
+    return Results.Ok(new
+    {
+        membershipId   = (int)info.MemberMembershipID,
+        memberId       = (int)info.MemberID,
+        memberName     = (string)info.MemberName,
+        planName       = (string)info.PlanName,
+        status         = (string)info.Status,
+        endDate        = (DateTime)info.EndDate,
+        sessionsUsed   = used,
+        sessionLimit   = limit,
+        sessionsLeft   = left,
+        isExhausted    = limit.HasValue && used >= limit.Value
+    });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  УЧАСТНИК — ТРЕНЕР (кто чаще всего тренировал)
+// ════════════════════════════════════════════════════════════════════════════
 
 app.MapGet("/api/members/{id:int}/trainer", async (int id) =>
 {
@@ -444,7 +613,7 @@ app.Run();
 record UpdateMemberRequest(string? Email, string? Address, string? FitnessGoal, string? Notes);
 record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote);
 
-/// <summary>Тело запроса для верификации штрихкода на входе в зал.</summary>
+/// <summary>Тело запроса для верификации штрихкода.</summary>
 record BarcodeVerifyRequest(string BarcodeValue);
 
 /// <summary>Ответ на проверку штрихкода.</summary>
@@ -457,3 +626,13 @@ record BarcodeVerifyResponse
     public string  Message    { get; init; } = "";
     public int     DaysLeft   { get; init; }
 }
+
+/// <summary>
+/// Тело запроса для списания сессии тренером.
+/// VisitDate — опционально, если null используется текущее время.
+/// </summary>
+record UseSessionRequest(
+    int?     ProgramID,
+    string?  ResultNote,
+    DateTime? VisitDate
+);
