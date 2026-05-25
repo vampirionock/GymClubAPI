@@ -226,7 +226,7 @@ app.MapGet("/api/trainers/{id:int}/visits", async (int id, int limit = 20) =>
                 WHERE v.TrainerID = @id
                 ORDER BY v.VisitDate DESC
                 LIMIT @limit";
-    return Results.Ok(await db.QueryAsync(sql, new { id, limit }));
+    return Results.Ok(await db.QueryAsync<Visit>(sql, new { id, limit }));
 });
 
 app.MapGet("/api/trainers/{id:int}/programs", async (int id) =>
