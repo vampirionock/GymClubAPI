@@ -94,6 +94,8 @@ public class Visit
     public int      VisitID      { get; set; }
     public int      MemberID     { get; set; }
     public string   MemberName   { get; set; } = "";
+    /// <summary>Фото участника (из таблицы Members).</summary>
+    public string?  Photo        { get; set; }
     public int?     TrainerID    { get; set; }
     public string?  TrainerName  { get; set; }
     public int?     ProgramID    { get; set; }
