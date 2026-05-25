@@ -91,18 +91,20 @@ public class MembershipPlan
 
 public class Visit
 {
-    public int      VisitID      { get; set; }
-    public int      MemberID     { get; set; }
-    public string   MemberName   { get; set; } = "";
+    public int      VisitID         { get; set; }
+    public int      MemberID        { get; set; }
+    public string   MemberName      { get; set; } = "";
     /// <summary>Фото участника (из таблицы Members).</summary>
-    public string?  Photo        { get; set; }
-    public int?     TrainerID    { get; set; }
-    public string?  TrainerName  { get; set; }
-    public int?     ProgramID    { get; set; }
-    public string?  ProgramName  { get; set; }
-    public DateTime VisitDate    { get; set; }
-    public string   VisitType    { get; set; } = "";
-    public string?  ResultNote   { get; set; }
+    public string?  Photo           { get; set; }
+    public int?     TrainerID       { get; set; }
+    public string?  TrainerName     { get; set; }
+    public int?     ProgramID       { get; set; }
+    public string?  ProgramName     { get; set; }
+    public DateTime VisitDate       { get; set; }
+    /// <summary>Продолжительность тренировки в минутах.</summary>
+    public int      DurationMinutes { get; set; } = 60;
+    public string   VisitType       { get; set; } = "";
+    public string?  ResultNote      { get; set; }
 }
 
 // ── Программа тренировок ─────────────────────────────────────────────────────
