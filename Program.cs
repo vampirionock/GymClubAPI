@@ -215,6 +215,7 @@ app.MapGet("/api/trainers/{id:int}/visits", async (int id, int limit = 20) =>
 {
     using var db = Db();
     var sql = @"SELECT v.VisitID, v.MemberID, m.FullName AS MemberName,
+                       m.Photo,
                        v.TrainerID, t.FullName AS TrainerName,
                        v.ProgramID, wp.ProgramName,
                        v.VisitDate, v.VisitType, v.ResultNote
@@ -225,7 +226,7 @@ app.MapGet("/api/trainers/{id:int}/visits", async (int id, int limit = 20) =>
                 WHERE v.TrainerID = @id
                 ORDER BY v.VisitDate DESC
                 LIMIT @limit";
-    return Results.Ok(await db.QueryAsync<Visit>(sql, new { id, limit }));
+    return Results.Ok(await db.QueryAsync(sql, new { id, limit }));
 });
 
 app.MapGet("/api/trainers/{id:int}/programs", async (int id) =>
@@ -366,7 +367,7 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
     // 4. Создаём Visit
     var visitId = await db.ExecuteScalarAsync<long>(@"
         INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
-        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @VisitType, @ResultNote);
+        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, 'Персональная тренировка', @ResultNote);
         SELECT LAST_INSERT_ID();",
         new
         {
@@ -374,9 +375,6 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
             TrainerID  = (int)membership.TrainerID,
             ProgramID  = req.ProgramID,
             VisitDate  = visitDate,
-            VisitType  = string.IsNullOrEmpty(req.VisitType)
-                ? "Персональная тренировка"
-                : req.VisitType,
             ResultNote = req.ResultNote
         });
 
@@ -635,8 +633,7 @@ record BarcodeVerifyResponse
 /// VisitDate — опционально, если null используется текущее время.
 /// </summary>
 record UseSessionRequest(
-    int?      ProgramID,
-    string?   ResultNote,
-    DateTime? VisitDate,
-    string?   VisitType
+    int?     ProgramID,
+    string?  ResultNote,
+    DateTime? VisitDate
 );
