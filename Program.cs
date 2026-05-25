@@ -366,7 +366,7 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
     // 4. Создаём Visit
     var visitId = await db.ExecuteScalarAsync<long>(@"
         INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
-        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, 'Персональная тренировка', @ResultNote);
+        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @VisitType, @ResultNote);
         SELECT LAST_INSERT_ID();",
         new
         {
@@ -374,6 +374,9 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
             TrainerID  = (int)membership.TrainerID,
             ProgramID  = req.ProgramID,
             VisitDate  = visitDate,
+            VisitType  = string.IsNullOrEmpty(req.VisitType)
+                ? "Персональная тренировка"
+                : req.VisitType,
             ResultNote = req.ResultNote
         });
 
@@ -632,7 +635,8 @@ record BarcodeVerifyResponse
 /// VisitDate — опционально, если null используется текущее время.
 /// </summary>
 record UseSessionRequest(
-    int?     ProgramID,
-    string?  ResultNote,
-    DateTime? VisitDate
+    int?      ProgramID,
+    string?   ResultNote,
+    DateTime? VisitDate,
+    string?   VisitType
 );
