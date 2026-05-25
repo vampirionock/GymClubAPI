@@ -362,30 +362,64 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
         });
 
     // 3. Определяем дату тренировки
-    var visitDate = req.VisitDate ?? DateTime.Now;
+    var visitDate    = req.VisitDate ?? DateTime.Now;
+    int durationMins = req.DurationMinutes ?? 60;
 
-    // 4. Создаём Visit
+    // 4. Проверяем конфликт расписания тренера
+    var conflict = await db.QueryFirstOrDefaultAsync(@"
+        SELECT v.VisitID,
+               m.FullName AS MemberName,
+               v.VisitDate,
+               v.DurationMinutes
+        FROM Visits v
+        JOIN Members m ON v.MemberID = m.MemberID
+        WHERE v.TrainerID = @TrainerID
+          AND DATE(v.VisitDate) = DATE(@VisitDate)
+          AND @VisitDate < DATE_ADD(v.VisitDate, INTERVAL v.DurationMinutes MINUTE)
+          AND DATE_ADD(@VisitDate, INTERVAL @Duration MINUTE) > v.VisitDate
+        LIMIT 1",
+        new
+        {
+            TrainerID = (int)membership.TrainerID,
+            VisitDate = visitDate,
+            Duration  = durationMins
+        });
+
+    if (conflict != null)
+    {
+        var conflictStart = (DateTime)conflict.VisitDate;
+        var conflictEnd   = conflictStart.AddMinutes((int)conflict.DurationMinutes);
+        return Results.Conflict(new
+        {
+            success = false,
+            message = $"В это время уже записан {conflict.MemberName}: {conflictStart:HH:mm}–{conflictEnd:HH:mm}. Новая тренировка возможна после {conflictEnd:HH:mm}."
+        });
+    }
+
+    // 5. Создаём Visit
     var visitId = await db.ExecuteScalarAsync<long>(@"
-        INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
-        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, 'Персональная тренировка', @ResultNote);
+        INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, DurationMinutes, VisitType, ResultNote)
+        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @DurationMinutes, @VisitType, @ResultNote);
         SELECT LAST_INSERT_ID();",
         new
         {
-            MemberID   = (int)membership.MemberID,
-            TrainerID  = (int)membership.TrainerID,
-            ProgramID  = req.ProgramID,
-            VisitDate  = visitDate,
-            ResultNote = req.ResultNote
+            MemberID        = (int)membership.MemberID,
+            TrainerID       = (int)membership.TrainerID,
+            ProgramID       = req.ProgramID,
+            VisitDate       = visitDate,
+            DurationMinutes = durationMins,
+            VisitType       = req.VisitType ?? "Персональная тренировка",
+            ResultNote      = req.ResultNote
         });
 
-    // 5. Увеличиваем счётчик сессий в абонементе
+    // 6. Увеличиваем счётчик сессий в абонементе
     await db.ExecuteAsync(@"
         UPDATE MemberMemberships
         SET SessionsUsed = SessionsUsed + 1
         WHERE MemberMembershipID = @membershipId",
         new { membershipId });
 
-    // 6. Считаем остаток
+    // 7. Считаем остаток
     int newUsed = (int)membership.SessionsUsed + 1;
     int? limit  = membership.VisitLimit != null ? (int?)membership.VisitLimit : null;
     int? left   = limit.HasValue ? Math.Max(0, limit.Value - newUsed) : null;
@@ -499,13 +533,46 @@ app.MapGet("/api/programs", async () =>
 app.MapPost("/api/visits", async (CreateVisitRequest req) =>
 {
     using var db = Db();
-    var sql = @"INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
-                VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @VisitType, @ResultNote);
+
+    // Проверяем конфликт расписания тренера
+    if (req.TrainerID > 0)
+    {
+        int dur = req.DurationMinutes > 0 ? req.DurationMinutes : 60;
+        var visitDt = req.VisitDate ?? DateTime.Now;
+        var conflict = await db.QueryFirstOrDefaultAsync(@"
+            SELECT v.VisitID,
+                   m.FullName AS MemberName,
+                   v.VisitDate,
+                   v.DurationMinutes
+            FROM Visits v
+            JOIN Members m ON v.MemberID = m.MemberID
+            WHERE v.TrainerID = @TrainerID
+              AND DATE(v.VisitDate) = DATE(@VisitDate)
+              AND @VisitDate < DATE_ADD(v.VisitDate, INTERVAL v.DurationMinutes MINUTE)
+              AND DATE_ADD(@VisitDate, INTERVAL @Duration MINUTE) > v.VisitDate
+            LIMIT 1",
+            new { req.TrainerID, VisitDate = visitDt, Duration = dur });
+
+        if (conflict != null)
+        {
+            var conflictStart = (DateTime)conflict.VisitDate;
+            var conflictEnd   = conflictStart.AddMinutes((int)conflict.DurationMinutes);
+            return Results.Conflict(new
+            {
+                success = false,
+                message = $"В это время уже записан {conflict.MemberName}: {conflictStart:HH:mm}–{conflictEnd:HH:mm}. Новая тренировка возможна после {conflictEnd:HH:mm}."
+            });
+        }
+    }
+
+    var sql = @"INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, DurationMinutes, VisitType, ResultNote)
+                VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @DurationMinutes, @VisitType, @ResultNote);
                 SELECT LAST_INSERT_ID();";
     var newId = await db.ExecuteScalarAsync<long>(sql, new
     {
         req.MemberID, req.TrainerID, req.ProgramID,
-        VisitDate = DateTime.Now,
+        VisitDate       = req.VisitDate ?? DateTime.Now,
+        DurationMinutes = req.DurationMinutes > 0 ? req.DurationMinutes : 60,
         req.VisitType, req.ResultNote
     });
     return Results.Ok(new { success = true, visitID = newId, message = "Тренировка отмечена" });
@@ -612,7 +679,7 @@ app.Run();
 // ════════════════════════════════════════════════════════════════════════════
 
 record UpdateMemberRequest(string? Email, string? Address, string? FitnessGoal, string? Notes);
-record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote);
+record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote, DateTime? VisitDate, int DurationMinutes = 60);
 
 /// <summary>Тело запроса для верификации штрихкода.</summary>
 record BarcodeVerifyRequest(string BarcodeValue);
@@ -633,7 +700,9 @@ record BarcodeVerifyResponse
 /// VisitDate — опционально, если null используется текущее время.
 /// </summary>
 record UseSessionRequest(
-    int?     ProgramID,
-    string?  ResultNote,
-    DateTime? VisitDate
+    int?      ProgramID,
+    string?   ResultNote,
+    DateTime? VisitDate,
+    string?   VisitType,
+    int?      DurationMinutes
 );
