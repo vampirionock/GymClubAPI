@@ -9,30 +9,34 @@ public class LoginRequest
 
 public class LoginResponse
 {
-    public bool Found       { get; set; }
-    public string Role      { get; set; } = ""; // "member" | "trainer"
-    public int    Id        { get; set; }
-    public string FullName  { get; set; } = "";
-    public string Phone     { get; set; } = "";
-    public string? Email    { get; set; }
-    public string? Photo    { get; set; }
+    public bool    Found      { get; set; }
+    public string  Role       { get; set; } = ""; // "member" | "trainer"
+    public int     Id         { get; set; }
+    public string  FullName   { get; set; } = "";
+    public string  Phone      { get; set; } = "";
+    public string? Email      { get; set; }
+    public string? Photo      { get; set; }
+    /// <summary>Штрихкод участника (только для Role == "member").</summary>
+    public string? Barcode    { get; set; }
 }
 
 // ── Участник ─────────────────────────────────────────────────────────────────
 
 public class Member
 {
-    public int     MemberID         { get; set; }
-    public string  FullName         { get; set; } = "";
-    public string  Phone            { get; set; } = "";
-    public string? Email            { get; set; }
-    public DateTime DateOfBirth     { get; set; }
-    public string  Gender           { get; set; } = "";
-    public string? Address          { get; set; }
-    public DateTime RegistrationDate{ get; set; }
-    public string? FitnessGoal      { get; set; }
-    public string? Notes            { get; set; }
-    public string? Photo            { get; set; }  // имя файла фото
+    public int      MemberID          { get; set; }
+    public string   FullName          { get; set; } = "";
+    public string   Phone             { get; set; } = "";
+    public string?  Email             { get; set; }
+    public DateTime DateOfBirth       { get; set; }
+    public string   Gender            { get; set; } = "";
+    public string?  Address           { get; set; }
+    public DateTime RegistrationDate  { get; set; }
+    public string?  FitnessGoal       { get; set; }
+    public string?  Notes             { get; set; }
+    public string?  Photo             { get; set; }
+    /// <summary>Уникальный штрихкод, формат GYM-XXXXX. Генерируется при регистрации.</summary>
+    public string?  BarcodeValue      { get; set; }
 }
 
 // ── Тренер ───────────────────────────────────────────────────────────────────
@@ -47,23 +51,23 @@ public class Trainer
     public int     ExperienceYears  { get; set; }
     public string? Bio              { get; set; }
     public string? WorkSchedule     { get; set; }
-    public string? Photo            { get; set; }  // имя файла фото
+    public string? Photo            { get; set; }
 }
 
 // ── Абонемент ─────────────────────────────────────────────────────────────────
 
 public class Membership
 {
-    public int     MemberMembershipID { get; set; }
-    public int     MemberID           { get; set; }
-    public int     PlanID             { get; set; }
-    public string  PlanName           { get; set; } = "";
-    public decimal Price              { get; set; }
-    public int     DurationMonths     { get; set; }
-    public DateTime StartDate         { get; set; }
-    public DateTime EndDate           { get; set; }
-    public string  Status             { get; set; } = "";
-    public string? Comment            { get; set; }
+    public int      MemberMembershipID { get; set; }
+    public int      MemberID           { get; set; }
+    public int      PlanID             { get; set; }
+    public string   PlanName           { get; set; } = "";
+    public decimal  Price              { get; set; }
+    public int      DurationMonths     { get; set; }
+    public DateTime StartDate          { get; set; }
+    public DateTime EndDate            { get; set; }
+    public string   Status             { get; set; } = "";
+    public string?  Comment            { get; set; }
 }
 
 // ── Тарифный план ────────────────────────────────────────────────────────────
