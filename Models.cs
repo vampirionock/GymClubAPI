@@ -35,7 +35,7 @@ public class Member
     public string?  FitnessGoal       { get; set; }
     public string?  Notes             { get; set; }
     public string?  Photo             { get; set; }
-    /// <summary>Уникальный штрихкод, формат GYM-XXXXX. Генерируется при регистрации.</summary>
+    /// <summary>Уникальный штрихкод, формат GYM-XXXXX.</summary>
     public string?  BarcodeValue      { get; set; }
 }
 
@@ -64,6 +64,10 @@ public class Membership
     public string   PlanName           { get; set; } = "";
     public decimal  Price              { get; set; }
     public int      DurationMonths     { get; set; }
+    /// <summary>ID тренера, с которым связан абонемент. NULL = клубный без тренера.</summary>
+    public int?     TrainerID          { get; set; }
+    /// <summary>Количество тренировок с тренером, проведённых по этому абонементу.</summary>
+    public int      SessionsUsed       { get; set; }
     public DateTime StartDate          { get; set; }
     public DateTime EndDate            { get; set; }
     public string   Status             { get; set; } = "";
@@ -78,6 +82,7 @@ public class MembershipPlan
     public string  PlanName       { get; set; } = "";
     public int     DurationMonths { get; set; }
     public decimal Price          { get; set; }
+    /// <summary>Лимит посещений/сессий по плану. NULL = безлимит.</summary>
     public int?    VisitLimit     { get; set; }
     public string? Description    { get; set; }
 }
@@ -110,6 +115,38 @@ public class WorkoutProgram
     public int     DurationWeeks   { get; set; }
     public string  Goal            { get; set; } = "";
     public string? Description     { get; set; }
+}
+
+// ── Клиент тренера (расширенный) ──────────────────────────────────────────────
+
+/// <summary>
+/// Клиент в списке у тренера — включает данные абонемента с тренером и счётчик сессий.
+/// </summary>
+public class TrainerClient
+{
+    public int     MemberID           { get; set; }
+    public string  FullName           { get; set; } = "";
+    public string  Phone              { get; set; } = "";
+    public string? Photo              { get; set; }
+    public string? FitnessGoal        { get; set; }
+
+    // Абонемент
+    public int?    MemberMembershipID { get; set; }
+    public string? PlanName           { get; set; }
+    public string? MembershipStatus   { get; set; }
+    public DateTime? EndDate          { get; set; }
+
+    // Сессии
+    /// <summary>Лимит сессий по абонементу. NULL = безлимит.</summary>
+    public int?    SessionLimit       { get; set; }
+    /// <summary>Использовано сессий по этому абонементу.</summary>
+    public int     SessionsUsed       { get; set; }
+    /// <summary>Осталось сессий. NULL если безлимит.</summary>
+    public int?    SessionsLeft       => SessionLimit.HasValue
+                                        ? Math.Max(0, SessionLimit.Value - SessionsUsed)
+                                        : null;
+    /// <summary>Все сессии исчерпаны (только когда есть лимит).</summary>
+    public bool    IsSessionsExhausted => SessionLimit.HasValue && SessionsUsed >= SessionLimit.Value;
 }
 
 // ── API ответ-обёртка ────────────────────────────────────────────────────────
