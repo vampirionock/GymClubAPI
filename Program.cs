@@ -2,7 +2,6 @@ using Dapper;
 using GymClubAPI.Models;
 using MySqlConnector;
 
-
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddCors(options =>
@@ -14,10 +13,14 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 app.UseCors("AllowAll");
 
-var connStr  = builder.Configuration.GetConnectionString("GymClubDB")!;
+var connStr   = builder.Configuration.GetConnectionString("GymClubDB")!;
 var photoRoot = builder.Configuration["PhotoPath"]
                 ?? Path.Combine(AppContext.BaseDirectory, "photo");
 MySqlConnection Db() => new MySqlConnection(connStr);
+
+// ════════════════════════════════════════════════════════════════════════════
+//  АВТОРИЗАЦИЯ
+// ════════════════════════════════════════════════════════════════════════════
 
 app.MapPost("/api/login", async (LoginRequest req) =>
 {
@@ -25,39 +28,187 @@ app.MapPost("/api/login", async (LoginRequest req) =>
     var member = await db.QueryFirstOrDefaultAsync<Member>(
         "SELECT * FROM Members WHERE Phone = @Phone", new { req.Phone });
     if (member != null)
-        return Results.Ok(new LoginResponse { Found=true, Role="member", Id=member.MemberID, FullName=member.FullName, Phone=member.Phone, Email=member.Email, Photo=member.Photo });
+        return Results.Ok(new LoginResponse
+        {
+            Found    = true,
+            Role     = "member",
+            Id       = member.MemberID,
+            FullName = member.FullName,
+            Phone    = member.Phone,
+            Email    = member.Email,
+            Photo    = member.Photo,
+            Barcode  = member.BarcodeValue
+                       ?? $"GYM-{member.MemberID:D5}" // fallback на случай NULL
+        });
+
     var trainer = await db.QueryFirstOrDefaultAsync<Trainer>(
         "SELECT * FROM Trainers WHERE Phone = @Phone", new { req.Phone });
     if (trainer != null)
-        return Results.Ok(new LoginResponse { Found=true, Role="trainer", Id=trainer.TrainerID, FullName=trainer.FullName, Phone=trainer.Phone, Email=trainer.Email, Photo=trainer.Photo });
+        return Results.Ok(new LoginResponse
+        {
+            Found    = true,
+            Role     = "trainer",
+            Id       = trainer.TrainerID,
+            FullName = trainer.FullName,
+            Phone    = trainer.Phone,
+            Email    = trainer.Email,
+            Photo    = trainer.Photo
+        });
+
     return Results.Ok(new LoginResponse { Found = false });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ШТРИХКОД — проверка на входе в зал
+//  POST /api/barcode/verify
+//  Тело: { "barcodeValue": "GYM-00001" }
+//  Ответ: статус абонемента + имя участника
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapPost("/api/barcode/verify", async (BarcodeVerifyRequest req) =>
+{
+    if (string.IsNullOrWhiteSpace(req.BarcodeValue))
+        return Results.BadRequest(new BarcodeVerifyResponse
+        {
+            Allowed = false,
+            Message = "Пустой штрихкод."
+        });
+
+    using var db = Db();
+
+    // Ищем участника по штрихкоду
+    var member = await db.QueryFirstOrDefaultAsync<Member>(
+        "SELECT * FROM Members WHERE BarcodeValue = @barcodeValue",
+        new { barcodeValue = req.BarcodeValue.Trim().ToUpper() });
+
+    if (member == null)
+        return Results.Ok(new BarcodeVerifyResponse
+        {
+            Allowed = false,
+            Message = "Участник не найден. Обратитесь на рецепцию."
+        });
+
+    // Проверяем активный абонемент
+    var sql = @"
+        SELECT mm.MemberMembershipID, mm.Status, mm.EndDate,
+               mp.PlanName, mp.VisitLimit,
+               (SELECT COUNT(*) FROM Visits v
+                WHERE v.MemberID = mm.MemberID
+                  AND v.VisitDate >= mm.StartDate
+                  AND v.VisitDate <= IFNULL(mm.EndDate, NOW())) AS UsedVisits
+        FROM MemberMemberships mm
+        JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
+        WHERE mm.MemberID = @memberId
+          AND mm.Status = 'Активен'
+          AND mm.EndDate >= CURDATE()
+        ORDER BY mm.EndDate DESC
+        LIMIT 1";
+
+    var membership = await db.QueryFirstOrDefaultAsync(sql, new { memberId = member.MemberID });
+
+    if (membership == null)
+        return Results.Ok(new BarcodeVerifyResponse
+        {
+            Allowed    = false,
+            MemberName = member.FullName,
+            Photo      = member.Photo,
+            Message    = "Нет активного абонемента. Обратитесь на рецепцию."
+        });
+
+    // Проверяем лимит посещений (если есть)
+    if (membership.VisitLimit != null && membership.UsedVisits >= membership.VisitLimit)
+        return Results.Ok(new BarcodeVerifyResponse
+        {
+            Allowed    = false,
+            MemberName = member.FullName,
+            Photo      = member.Photo,
+            PlanName   = membership.PlanName,
+            Message    = $"Лимит посещений исчерпан ({membership.UsedVisits}/{membership.VisitLimit})."
+        });
+
+    // Всё в порядке — записываем посещение автоматически
+    await db.ExecuteAsync(
+        @"INSERT INTO Visits (MemberID, VisitDate, VisitType, ResultNote)
+          VALUES (@memberId, NOW(), 'Самостоятельная тренировка', 'Вход через штрихкод')",
+        new { memberId = member.MemberID });
+
+    int daysLeft = (int)(membership.EndDate - DateTime.Today).TotalDays;
+
+    return Results.Ok(new BarcodeVerifyResponse
+    {
+        Allowed    = true,
+        MemberName = member.FullName,
+        Photo      = member.Photo,
+        PlanName   = membership.PlanName,
+        Message    = daysLeft <= 7
+            ? $"Добро пожаловать, {member.FullName}! Абонемент истекает через {daysLeft} дн."
+            : $"Добро пожаловать, {member.FullName}!",
+        DaysLeft   = daysLeft
+    });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  УЧАСТНИКИ
+// ════════════════════════════════════════════════════════════════════════════
 
 app.MapGet("/api/members/{id:int}", async (int id) =>
 {
     using var db = Db();
-    var m = await db.QueryFirstOrDefaultAsync<Member>("SELECT * FROM Members WHERE MemberID = @id", new { id });
+    var m = await db.QueryFirstOrDefaultAsync<Member>(
+        "SELECT * FROM Members WHERE MemberID = @id", new { id });
     return m is null ? Results.NotFound() : Results.Ok(m);
 });
 
 app.MapGet("/api/members/{id:int}/memberships", async (int id) =>
 {
     using var db = Db();
-    var sql = "SELECT mm.MemberMembershipID,mm.MemberID,mm.PlanID,mp.PlanName,mp.Price,mp.DurationMonths,mm.StartDate,mm.EndDate,mm.Status,mm.Comment FROM MemberMemberships mm JOIN MembershipPlans mp ON mm.PlanID=mp.PlanID WHERE mm.MemberID=@id ORDER BY mm.StartDate DESC";
+    var sql = @"SELECT mm.MemberMembershipID, mm.MemberID, mm.PlanID,
+                       mp.PlanName, mp.Price, mp.DurationMonths,
+                       mm.StartDate, mm.EndDate, mm.Status, mm.Comment
+                FROM MemberMemberships mm
+                JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
+                WHERE mm.MemberID = @id
+                ORDER BY mm.StartDate DESC";
     return Results.Ok(await db.QueryAsync<Membership>(sql, new { id }));
 });
 
 app.MapGet("/api/members/{id:int}/visits", async (int id, int limit = 20) =>
 {
     using var db = Db();
-    var sql = "SELECT v.VisitID,v.MemberID,m.FullName AS MemberName,v.TrainerID,t.FullName AS TrainerName,v.ProgramID,wp.ProgramName,v.VisitDate,v.VisitType,v.ResultNote FROM Visits v JOIN Members m ON v.MemberID=m.MemberID LEFT JOIN Trainers t ON v.TrainerID=t.TrainerID LEFT JOIN WorkoutPrograms wp ON v.ProgramID=wp.ProgramID WHERE v.MemberID=@id ORDER BY v.VisitDate DESC LIMIT @limit";
+    var sql = @"SELECT v.VisitID, v.MemberID, m.FullName AS MemberName,
+                       v.TrainerID, t.FullName AS TrainerName,
+                       v.ProgramID, wp.ProgramName,
+                       v.VisitDate, v.VisitType, v.ResultNote
+                FROM Visits v
+                JOIN Members m ON v.MemberID = m.MemberID
+                LEFT JOIN Trainers t ON v.TrainerID = t.TrainerID
+                LEFT JOIN WorkoutPrograms wp ON v.ProgramID = wp.ProgramID
+                WHERE v.MemberID = @id
+                ORDER BY v.VisitDate DESC
+                LIMIT @limit";
     return Results.Ok(await db.QueryAsync<Visit>(sql, new { id, limit }));
 });
+
+app.MapPut("/api/members/{id:int}", async (int id, UpdateMemberRequest req) =>
+{
+    using var db = Db();
+    var rows = await db.ExecuteAsync(
+        "UPDATE Members SET Email=@Email, Address=@Address, FitnessGoal=@FitnessGoal, Notes=@Notes WHERE MemberID=@id",
+        new { req.Email, req.Address, req.FitnessGoal, req.Notes, id });
+    return rows > 0
+        ? Results.Ok(new { success = true, message = "Профиль обновлён" })
+        : Results.NotFound(new { success = false });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ТРЕНЕРЫ
+// ════════════════════════════════════════════════════════════════════════════
 
 app.MapGet("/api/trainers/{id:int}", async (int id) =>
 {
     using var db = Db();
-    var t = await db.QueryFirstOrDefaultAsync<Trainer>("SELECT * FROM Trainers WHERE TrainerID = @id", new { id });
+    var t = await db.QueryFirstOrDefaultAsync<Trainer>(
+        "SELECT * FROM Trainers WHERE TrainerID = @id", new { id });
     return t is null ? Results.NotFound() : Results.Ok(t);
 });
 
@@ -70,79 +221,132 @@ app.MapGet("/api/trainers", async () =>
 app.MapGet("/api/trainers/{id:int}/visits", async (int id, int limit = 20) =>
 {
     using var db = Db();
-    var sql = "SELECT v.VisitID,v.MemberID,m.FullName AS MemberName,v.TrainerID,t.FullName AS TrainerName,v.ProgramID,wp.ProgramName,v.VisitDate,v.VisitType,v.ResultNote FROM Visits v JOIN Members m ON v.MemberID=m.MemberID LEFT JOIN Trainers t ON v.TrainerID=t.TrainerID LEFT JOIN WorkoutPrograms wp ON v.ProgramID=wp.ProgramID WHERE v.TrainerID=@id ORDER BY v.VisitDate DESC LIMIT @limit";
+    var sql = @"SELECT v.VisitID, v.MemberID, m.FullName AS MemberName,
+                       v.TrainerID, t.FullName AS TrainerName,
+                       v.ProgramID, wp.ProgramName,
+                       v.VisitDate, v.VisitType, v.ResultNote
+                FROM Visits v
+                JOIN Members m ON v.MemberID = m.MemberID
+                LEFT JOIN Trainers t ON v.TrainerID = t.TrainerID
+                LEFT JOIN WorkoutPrograms wp ON v.ProgramID = wp.ProgramID
+                WHERE v.TrainerID = @id
+                ORDER BY v.VisitDate DESC
+                LIMIT @limit";
     return Results.Ok(await db.QueryAsync<Visit>(sql, new { id, limit }));
 });
 
 app.MapGet("/api/trainers/{id:int}/programs", async (int id) =>
 {
     using var db = Db();
-    var sql = "SELECT wp.ProgramID,wp.ProgramName,wp.TrainerID,t.FullName AS TrainerName,wp.DifficultyLevel,wp.DurationWeeks,wp.Goal,wp.Description FROM WorkoutPrograms wp JOIN Trainers t ON wp.TrainerID=t.TrainerID WHERE wp.TrainerID=@id ORDER BY wp.ProgramName";
+    var sql = @"SELECT wp.ProgramID, wp.ProgramName, wp.TrainerID,
+                       t.FullName AS TrainerName, wp.DifficultyLevel,
+                       wp.DurationWeeks, wp.Goal, wp.Description
+                FROM WorkoutPrograms wp
+                JOIN Trainers t ON wp.TrainerID = t.TrainerID
+                WHERE wp.TrainerID = @id
+                ORDER BY wp.ProgramName";
     return Results.Ok(await db.QueryAsync<WorkoutProgram>(sql, new { id }));
-});
-
-app.MapGet("/api/plans", async () =>
-{
-    using var db = Db();
-    return Results.Ok(await db.QueryAsync<MembershipPlan>("SELECT * FROM MembershipPlans ORDER BY Price"));
-});
-
-app.MapGet("/api/programs", async () =>
-{
-    using var db = Db();
-    var sql = "SELECT wp.ProgramID,wp.ProgramName,wp.TrainerID,t.FullName AS TrainerName,wp.DifficultyLevel,wp.DurationWeeks,wp.Goal,wp.Description FROM WorkoutPrograms wp JOIN Trainers t ON wp.TrainerID=t.TrainerID ORDER BY wp.DifficultyLevel,wp.ProgramName";
-    return Results.Ok(await db.QueryAsync<WorkoutProgram>(sql));
-});
-
-app.MapPut("/api/members/{id:int}", async (int id, UpdateMemberRequest req) =>
-{
-    using var db = Db();
-    var rows = await db.ExecuteAsync("UPDATE Members SET Email=@Email,Address=@Address,FitnessGoal=@FitnessGoal,Notes=@Notes WHERE MemberID=@id", new { req.Email, req.Address, req.FitnessGoal, req.Notes, id });
-    return rows > 0 ? Results.Ok(new { success=true, message="Профиль обновлён" }) : Results.NotFound(new { success=false });
 });
 
 app.MapGet("/api/trainers/{id:int}/members", async (int id) =>
 {
     using var db = Db();
-    var sql = "SELECT m.MemberID,m.FullName,m.Phone,m.Email,m.Gender,m.FitnessGoal,COUNT(v.VisitID) AS TotalVisits FROM Members m JOIN Visits v ON m.MemberID=v.MemberID WHERE v.TrainerID=@id GROUP BY m.MemberID,m.FullName,m.Phone,m.Email,m.Gender,m.FitnessGoal ORDER BY m.FullName";
+    var sql = @"SELECT m.MemberID, m.FullName, m.Phone, m.Email, m.Gender,
+                       m.FitnessGoal, COUNT(v.VisitID) AS TotalVisits
+                FROM Members m
+                JOIN Visits v ON m.MemberID = v.MemberID
+                WHERE v.TrainerID = @id
+                GROUP BY m.MemberID, m.FullName, m.Phone, m.Email, m.Gender, m.FitnessGoal
+                ORDER BY m.FullName";
     return Results.Ok(await db.QueryAsync(sql, new { id }));
 });
 
 app.MapGet("/api/trainers/{id:int}/clients", async (int id) =>
 {
     using var db = Db();
-    var sql = "SELECT m.MemberID,m.FullName,m.Phone,m.Photo,m.FitnessGoal,mm.Status AS MembershipStatus,mp.PlanName,mp.VisitLimit,mm.EndDate,(SELECT COUNT(*) FROM Visits v2 WHERE v2.MemberID=m.MemberID AND v2.TrainerID=@id AND mm.StartDate IS NOT NULL AND v2.VisitDate>=mm.StartDate AND v2.VisitDate<=IFNULL(mm.EndDate,NOW())) AS UsedVisits FROM Members m JOIN Visits v ON m.MemberID=v.MemberID AND v.TrainerID=@id LEFT JOIN MemberMemberships mm ON mm.MemberID=m.MemberID AND mm.Status='Активен' AND mm.EndDate>=CURDATE() LEFT JOIN MembershipPlans mp ON mm.PlanID=mp.PlanID GROUP BY m.MemberID,m.FullName,m.Phone,m.Photo,m.FitnessGoal,mm.Status,mp.PlanName,mp.VisitLimit,mm.EndDate,mm.StartDate ORDER BY m.FullName";
+    var sql = @"SELECT m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
+                       mm.Status AS MembershipStatus, mp.PlanName, mp.VisitLimit,
+                       mm.EndDate,
+                       (SELECT COUNT(*) FROM Visits v2
+                        WHERE v2.MemberID = m.MemberID AND v2.TrainerID = @id
+                          AND mm.StartDate IS NOT NULL
+                          AND v2.VisitDate >= mm.StartDate
+                          AND v2.VisitDate <= IFNULL(mm.EndDate, NOW())) AS UsedVisits
+                FROM Members m
+                JOIN Visits v ON m.MemberID = v.MemberID AND v.TrainerID = @id
+                LEFT JOIN MemberMemberships mm
+                    ON mm.MemberID = m.MemberID AND mm.Status = 'Активен' AND mm.EndDate >= CURDATE()
+                LEFT JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
+                GROUP BY m.MemberID, m.FullName, m.Phone, m.Photo, m.FitnessGoal,
+                         mm.Status, mp.PlanName, mp.VisitLimit, mm.EndDate, mm.StartDate
+                ORDER BY m.FullName";
     return Results.Ok(await db.QueryAsync(sql, new { id }));
-});
-
-app.MapPost("/api/visits", async (CreateVisitRequest req) =>
-{
-    using var db = Db();
-    var sql = "INSERT INTO Visits (MemberID,TrainerID,ProgramID,VisitDate,VisitType,ResultNote) VALUES (@MemberID,@TrainerID,@ProgramID,@VisitDate,@VisitType,@ResultNote); SELECT LAST_INSERT_ID();";
-    var newId = await db.ExecuteScalarAsync<long>(sql, new { req.MemberID, req.TrainerID, req.ProgramID, VisitDate=DateTime.Now, req.VisitType, req.ResultNote });
-    return Results.Ok(new { success=true, visitID=newId, message="Тренировка отмечена" });
 });
 
 app.MapGet("/api/members/{id:int}/trainer", async (int id) =>
 {
     using var db = Db();
-    var sql = "SELECT t.TrainerID,t.FullName,t.Phone,t.Email,t.Specialization,t.ExperienceYears,t.Bio,t.WorkSchedule,t.Photo,COUNT(v.VisitID) AS SessionCount FROM Visits v JOIN Trainers t ON v.TrainerID=t.TrainerID WHERE v.MemberID=@id AND v.TrainerID IS NOT NULL GROUP BY t.TrainerID,t.FullName,t.Phone,t.Email,t.Specialization,t.ExperienceYears,t.Bio,t.WorkSchedule,t.Photo ORDER BY COUNT(v.VisitID) DESC LIMIT 1";
+    var sql = @"SELECT t.TrainerID, t.FullName, t.Phone, t.Email,
+                       t.Specialization, t.ExperienceYears,
+                       t.Bio, t.WorkSchedule, t.Photo,
+                       COUNT(v.VisitID) AS SessionCount
+                FROM Visits v
+                JOIN Trainers t ON v.TrainerID = t.TrainerID
+                WHERE v.MemberID = @id AND v.TrainerID IS NOT NULL
+                GROUP BY t.TrainerID, t.FullName, t.Phone, t.Email,
+                         t.Specialization, t.ExperienceYears, t.Bio, t.WorkSchedule, t.Photo
+                ORDER BY COUNT(v.VisitID) DESC
+                LIMIT 1";
     var trainer = await db.QueryFirstOrDefaultAsync(sql, new { id });
-    return trainer is null ? Results.Ok(new { found=false }) : Results.Ok(new { found=true, trainer });
+    return trainer is null
+        ? Results.Ok(new { found = false })
+        : Results.Ok(new { found = true, trainer });
 });
 
-app.MapGet("/api/health", async () =>
+// ════════════════════════════════════════════════════════════════════════════
+//  ПЛАНЫ, ПРОГРАММЫ, ПОСЕЩЕНИЯ
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/plans", async () =>
 {
-    try { using var db = Db(); await db.OpenAsync(); return Results.Ok(new { status="ok", message="API работает, БД подключена (Railway MySQL)", time=DateTime.Now }); }
-    catch (Exception ex) { return Results.Problem($"Ошибка: {ex.Message}"); }
+    using var db = Db();
+    return Results.Ok(await db.QueryAsync<MembershipPlan>(
+        "SELECT * FROM MembershipPlans ORDER BY Price"));
+});
+
+app.MapGet("/api/programs", async () =>
+{
+    using var db = Db();
+    var sql = @"SELECT wp.ProgramID, wp.ProgramName, wp.TrainerID,
+                       t.FullName AS TrainerName, wp.DifficultyLevel,
+                       wp.DurationWeeks, wp.Goal, wp.Description
+                FROM WorkoutPrograms wp
+                JOIN Trainers t ON wp.TrainerID = t.TrainerID
+                ORDER BY wp.DifficultyLevel, wp.ProgramName";
+    return Results.Ok(await db.QueryAsync<WorkoutProgram>(sql));
+});
+
+app.MapPost("/api/visits", async (CreateVisitRequest req) =>
+{
+    using var db = Db();
+    var sql = @"INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
+                VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @VisitType, @ResultNote);
+                SELECT LAST_INSERT_ID();";
+    var newId = await db.ExecuteScalarAsync<long>(sql, new
+    {
+        req.MemberID, req.TrainerID, req.ProgramID,
+        VisitDate = DateTime.Now,
+        req.VisitType, req.ResultNote
+    });
+    return Results.Ok(new { success = true, visitID = newId, message = "Тренировка отмечена" });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-//  ЗАГРУЗКА ФОТО В SUPABASE STORAGE
-//  POST /api/photos/upload
+//  ФОТО — Supabase Storage
 // ════════════════════════════════════════════════════════════════════════════
-var supabaseUrl = "https://cgivukurkmlnqdrtkvop.supabase.co";
-var supabaseKey = "sb_secret_NSXh0Q9MNFWRjzLK1YNkAA_nAflcbXM";
+
+var supabaseUrl    = "https://cgivukurkmlnqdrtkvop.supabase.co";
+var supabaseKey    = "sb_secret_NSXh0Q9MNFWRjzLK1YNkAA_nAflcbXM";
 var supabaseBucket = "photos";
 
 app.MapPost("/api/photos/upload", async (HttpRequest request) =>
@@ -154,7 +358,7 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
 
         var form     = await request.ReadFormAsync();
         var file     = form.Files.GetFile("file");
-        var filePath = form["file_path"].ToString(); // "visitors/ivan_petrov.jpg"
+        var filePath = form["file_path"].ToString();
 
         if (file == null || file.Length == 0)
             return Results.BadRequest("Файл не выбран");
@@ -166,26 +370,26 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
         string ext  = Path.GetExtension(file.FileName).ToLower();
         string mime = ext == ".png" ? "image/png" : "image/jpeg";
 
-        using var httpClient = new HttpClient();
-        httpClient.Timeout   = TimeSpan.FromSeconds(60);
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {supabaseKey}");
         httpClient.DefaultRequestHeaders.Add("apikey", supabaseKey);
 
-        // Удаляем старый файл если существует
-        await httpClient.DeleteAsync($"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}");
+        await httpClient.DeleteAsync(
+            $"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}");
 
         var byteContent = new ByteArrayContent(fileBytes);
-        byteContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mime);
+        byteContent.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue(mime);
 
         var response = await httpClient.PostAsync(
             $"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}", byteContent);
 
         var json = await response.Content.ReadAsStringAsync();
-
         if (!response.IsSuccessStatusCode)
             return Results.Problem($"Supabase error: {json}");
 
-        string publicUrl = $"{supabaseUrl}/storage/v1/object/public/{supabaseBucket}/{filePath}";
+        string publicUrl =
+            $"{supabaseUrl}/storage/v1/object/public/{supabaseBucket}/{filePath}";
         return Results.Ok(new { url = publicUrl });
     }
     catch (Exception ex)
@@ -194,10 +398,6 @@ app.MapPost("/api/photos/upload", async (HttpRequest request) =>
     }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-//  УДАЛЕНИЕ ФОТО ИЗ SUPABASE STORAGE
-//  DELETE /api/photos/{**filePath}
-// ════════════════════════════════════════════════════════════════════════════
 app.MapDelete("/api/photos/{**filePath}", async (string filePath) =>
 {
     using var httpClient = new HttpClient();
@@ -207,10 +407,53 @@ app.MapDelete("/api/photos/{**filePath}", async (string filePath) =>
     var response = await httpClient.DeleteAsync(
         $"{supabaseUrl}/storage/v1/object/{supabaseBucket}/{filePath}");
 
-    return response.IsSuccessStatusCode ? Results.Ok() : Results.Problem("Ошибка удаления фото");
+    return response.IsSuccessStatusCode
+        ? Results.Ok()
+        : Results.Problem("Ошибка удаления фото");
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  HEALTH CHECK
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/health", async () =>
+{
+    try
+    {
+        using var db = Db();
+        await db.OpenAsync();
+        return Results.Ok(new
+        {
+            status  = "ok",
+            message = "API работает, БД подключена (Railway MySQL)",
+            time    = DateTime.Now
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Ошибка: {ex.Message}");
+    }
 });
 
 app.Run();
 
+// ════════════════════════════════════════════════════════════════════════════
+//  ЗАПИСИ (record types)
+// ════════════════════════════════════════════════════════════════════════════
+
 record UpdateMemberRequest(string? Email, string? Address, string? FitnessGoal, string? Notes);
 record CreateVisitRequest(int MemberID, int TrainerID, int? ProgramID, string VisitType, string? ResultNote);
+
+/// <summary>Тело запроса для верификации штрихкода на входе в зал.</summary>
+record BarcodeVerifyRequest(string BarcodeValue);
+
+/// <summary>Ответ на проверку штрихкода.</summary>
+record BarcodeVerifyResponse
+{
+    public bool    Allowed    { get; init; }
+    public string? MemberName { get; init; }
+    public string? Photo      { get; init; }
+    public string? PlanName   { get; init; }
+    public string  Message    { get; init; } = "";
+    public int     DaysLeft   { get; init; }
+}
