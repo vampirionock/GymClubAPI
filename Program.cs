@@ -290,6 +290,9 @@ app.MapGet("/api/trainers/{id:int}/members", async (int id) =>
 app.MapGet("/api/trainers/{id:int}/clients", async (int id) =>
 {
     using var db = Db();
+    // SessionsUsed считается динамически из таблицы Visits —
+    // это гарантирует актуальность даже если визиты удалены через ПК-приложение напрямую.
+    // mm.SessionsUsed (хранимое) не используется т.к. оно не синхронизируется при удалении.
     var sql = @"
         SELECT
             m.MemberID,
@@ -302,7 +305,13 @@ app.MapGet("/api/trainers/{id:int}/clients", async (int id) =>
             mm.Status        AS MembershipStatus,
             mm.EndDate,
             mp.VisitLimit    AS SessionLimit,
-            mm.SessionsUsed
+            (
+                SELECT COUNT(*)
+                FROM Visits v
+                WHERE v.MemberID   = mm.MemberID
+                  AND v.TrainerID  = mm.TrainerID
+                  AND v.VisitDate >= mm.StartDate
+            ) AS SessionsUsed
         FROM MemberMemberships mm
         JOIN Members m           ON mm.MemberID  = m.MemberID
         JOIN MembershipPlans mp  ON mm.PlanID    = mp.PlanID
@@ -523,22 +532,9 @@ app.MapGet("/api/members/{id:int}/trainer", async (int id) =>
                 ORDER BY COUNT(v.VisitID) DESC
                 LIMIT 1";
     var trainer = await db.QueryFirstOrDefaultAsync(sql, new { id });
-    if (trainer is null) return Results.Ok(new { found = false });
-    // Возвращаем плоский объект — мобильное приложение читает поля напрямую
-    return Results.Ok(new
-    {
-        found           = true,
-        trainerID       = (int)trainer.TrainerID,
-        fullName        = (string)(trainer.FullName ?? ""),
-        phone           = (string)(trainer.Phone ?? ""),
-        email           = (string)(trainer.Email ?? ""),
-        specialization  = (string)(trainer.Specialization ?? ""),
-        experienceYears = (int)(trainer.ExperienceYears ?? 0),
-        bio             = (string)(trainer.Bio ?? ""),
-        workSchedule    = (string)(trainer.WorkSchedule ?? ""),
-        photo           = (string)(trainer.Photo ?? ""),
-        sessionCount    = (int)trainer.SessionCount
-    });
+    return trainer is null
+        ? Results.Ok(new { found = false })
+        : Results.Ok(new { found = true, trainer });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
