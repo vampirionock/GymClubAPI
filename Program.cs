@@ -2,7 +2,6 @@ using Dapper;
 using GymClubAPI.Models;
 using MySqlConnector;
 
-
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddCors(options =>
@@ -387,56 +386,21 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
             message = $"Все сессии исчерпаны ({membership.SessionsUsed}/{membership.VisitLimit}). Клиенту нужен новый абонемент."
         });
 
-    // 3. Определяем дату тренировки и длительность
-    var visitDate      = req.VisitDate ?? DateTime.Now;
-    int durationMinutes = req.DurationMinutes ?? 60;
-    var visitEnd       = visitDate.AddMinutes(durationMinutes);
-    int trainerId      = (int)membership.TrainerID;
+    // 3. Определяем дату тренировки
+    var visitDate = req.VisitDate ?? DateTime.Now;
 
-    // 4. Проверяем конфликт расписания тренера:
-    //    есть ли уже тренировка в этот промежуток времени?
-    var conflict = await db.QueryFirstOrDefaultAsync(@"
-        SELECT v.VisitID, m.FullName AS MemberName,
-               v.VisitDate,
-               COALESCE(v.DurationMinutes, 60) AS DurationMinutes
-        FROM Visits v
-        JOIN Members m ON v.MemberID = m.MemberID
-        WHERE v.TrainerID = @trainerId
-          AND v.VisitID   != 0
-          AND (
-              -- новая тренировка начинается во время существующей
-              (@visitStart < DATE_ADD(v.VisitDate, INTERVAL COALESCE(v.DurationMinutes,60) MINUTE)
-               AND @visitEnd > v.VisitDate)
-          )
-        LIMIT 1",
-        new { trainerId, visitStart = visitDate, visitEnd });
-
-    if (conflict != null)
-    {
-        string conflictTime  = ((DateTime)conflict.VisitDate).ToString("HH:mm");
-        int    conflictDur   = (int)conflict.DurationMinutes;
-        string conflictEnd   = ((DateTime)conflict.VisitDate).AddMinutes(conflictDur).ToString("HH:mm");
-        string conflictName  = (string)conflict.MemberName;
-        return Results.Conflict(new
-        {
-            success = false,
-            message = $"На это время уже записан {conflictName} ({conflictTime}–{conflictEnd}). Выберите другое время."
-        });
-    }
-
-    // 5. Создаём Visit
+    // 4. Создаём Visit
     var visitId = await db.ExecuteScalarAsync<long>(@"
-        INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, DurationMinutes, VisitType, ResultNote)
-        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, @DurationMinutes, 'Персональная тренировка', @ResultNote);
+        INSERT INTO Visits (MemberID, TrainerID, ProgramID, VisitDate, VisitType, ResultNote)
+        VALUES (@MemberID, @TrainerID, @ProgramID, @VisitDate, 'Персональная тренировка', @ResultNote);
         SELECT LAST_INSERT_ID();",
         new
         {
-            MemberID        = (int)membership.MemberID,
-            TrainerID       = trainerId,
-            ProgramID       = req.ProgramID,
-            VisitDate       = visitDate,
-            DurationMinutes = durationMinutes,
-            ResultNote      = req.ResultNote
+            MemberID   = (int)membership.MemberID,
+            TrainerID  = (int)membership.TrainerID,
+            ProgramID  = req.ProgramID,
+            VisitDate  = visitDate,
+            ResultNote = req.ResultNote
         });
 
     // 5. Увеличиваем счётчик сессий в абонементе
@@ -695,8 +659,7 @@ record BarcodeVerifyResponse
 /// VisitDate — опционально, если null используется текущее время.
 /// </summary>
 record UseSessionRequest(
-    int?      ProgramID,
-    string?   ResultNote,
-    DateTime? VisitDate,
-    int?      DurationMinutes
+    int?     ProgramID,
+    string?  ResultNote,
+    DateTime? VisitDate
 );
