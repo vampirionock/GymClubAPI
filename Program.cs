@@ -311,6 +311,7 @@ app.MapGet("/api/trainers/{id:int}/clients", async (int id) =>
                 WHERE v.MemberID   = mm.MemberID
                   AND v.TrainerID  = mm.TrainerID
                   AND v.VisitDate >= mm.StartDate
+                  AND v.VisitDate <= NOW()
             ) AS SessionsUsed
         FROM MemberMemberships mm
         JOIN Members m           ON mm.MemberID  = m.MemberID
