@@ -157,12 +157,13 @@ app.MapGet("/api/members/{id:int}/memberships", async (int id) =>
     var sql = @"SELECT mm.MemberMembershipID, mm.MemberID, mm.PlanID,
                        mp.PlanName, mp.Price, mp.DurationMonths,
                        mm.TrainerID, mm.SessionsUsed,
-                       mm.StartDate, mm.EndDate, mm.Status, mm.Comment
+                       mm.StartDate, mm.EndDate, mm.Status, mm.Comment,
+                       mp.VisitLimit
                 FROM MemberMemberships mm
                 JOIN MembershipPlans mp ON mm.PlanID = mp.PlanID
                 WHERE mm.MemberID = @id
                 ORDER BY mm.StartDate DESC";
-    return Results.Ok(await db.QueryAsync<Membership>(sql, new { id }));
+    return Results.Ok(await db.QueryAsync(sql, new { id }));
 });
 
 app.MapGet("/api/members/{id:int}/visits", async (int id, int limit = 20) =>
@@ -235,6 +236,18 @@ app.MapPut("/api/trainers/{id:int}/photo", async (int id, UpdatePhotoRequest req
     using var db = Db();
     var rows = await db.ExecuteAsync(
         "UPDATE Trainers SET Photo = @Photo WHERE TrainerID = @id",
+        new { Photo = req.PhotoUrl, id });
+    return rows > 0
+        ? Results.Ok(new { success = true })
+        : Results.NotFound(new { success = false });
+});
+
+// ── Обновить фото участника ──────────────────────────────────────────────────
+app.MapPut("/api/members/{id:int}/photo", async (int id, UpdatePhotoRequest req) =>
+{
+    using var db = Db();
+    var rows = await db.ExecuteAsync(
+        "UPDATE Members SET Photo = @Photo WHERE MemberID = @id",
         new { Photo = req.PhotoUrl, id });
     return rows > 0
         ? Results.Ok(new { success = true })
