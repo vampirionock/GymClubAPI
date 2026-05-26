@@ -523,9 +523,22 @@ app.MapGet("/api/members/{id:int}/trainer", async (int id) =>
                 ORDER BY COUNT(v.VisitID) DESC
                 LIMIT 1";
     var trainer = await db.QueryFirstOrDefaultAsync(sql, new { id });
-    return trainer is null
-        ? Results.Ok(new { found = false })
-        : Results.Ok(new { found = true, trainer });
+    if (trainer is null) return Results.Ok(new { found = false });
+    // Возвращаем плоский объект — мобильное приложение читает поля напрямую
+    return Results.Ok(new
+    {
+        found           = true,
+        trainerID       = (int)trainer.TrainerID,
+        fullName        = (string)(trainer.FullName ?? ""),
+        phone           = (string)(trainer.Phone ?? ""),
+        email           = (string)(trainer.Email ?? ""),
+        specialization  = (string)(trainer.Specialization ?? ""),
+        experienceYears = (int)(trainer.ExperienceYears ?? 0),
+        bio             = (string)(trainer.Bio ?? ""),
+        workSchedule    = (string)(trainer.WorkSchedule ?? ""),
+        photo           = (string)(trainer.Photo ?? ""),
+        sessionCount    = (int)trainer.SessionCount
+    });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
