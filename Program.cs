@@ -450,6 +450,37 @@ app.MapPost("/api/memberships/{membershipId:int}/use-session",
         WHERE MemberMembershipID = @membershipId",
         new { membershipId });
 
+    // 6. Создаём уведомление для участника
+    try
+    {
+        var trainerName = await db.QueryFirstOrDefaultAsync<string>(
+            "SELECT FullName FROM Trainers WHERE TrainerID = @trainerId",
+            new { trainerId });
+
+        var culture  = new System.Globalization.CultureInfo("ru-RU");
+        string dateStr  = visitDate.ToString("d MMMM", culture);
+        string timeFrom = visitDate.ToString("HH:mm");
+        string timeTo   = visitEnd.ToString("HH:mm");
+
+        string notifTitle = "Тренировка запланирована 💪";
+        string notifBody  = $"{dateStr} · {timeFrom}–{timeTo}";
+        if (!string.IsNullOrEmpty(trainerName))
+            notifBody += $" · {trainerName}";
+
+        await db.ExecuteAsync(@"
+            INSERT INTO Notifications (MemberID, Title, Body, VisitDate, TrainerName)
+            VALUES (@MemberID, @Title, @Body, @VisitDate, @TrainerName)",
+            new
+            {
+                MemberID    = (int)membership.MemberID,
+                Title       = notifTitle,
+                Body        = notifBody,
+                VisitDate   = visitDate,
+                TrainerName = trainerName ?? ""
+            });
+    }
+    catch { /* уведомления не критичны */ }
+
     // 6. Считаем остаток
     int newUsed = (int)membership.SessionsUsed + 1;
     int? limit  = membership.VisitLimit != null ? (int?)membership.VisitLimit : null;
@@ -645,6 +676,44 @@ app.MapDelete("/api/photos/{**filePath}", async (string filePath) =>
     return response.IsSuccessStatusCode
         ? Results.Ok()
         : Results.Problem("Ошибка удаления фото");
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  УВЕДОМЛЕНИЯ
+// ════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/members/{id:int}/notifications", async (int id) =>
+{
+    using var db = Db();
+    var rows = await db.QueryAsync(@"
+        SELECT NotificationID, Title, Body, VisitDate, TrainerName, IsRead, CreatedAt
+        FROM Notifications
+        WHERE MemberID = @id
+        ORDER BY CreatedAt DESC
+        LIMIT 50", new { id });
+    return Results.Ok(rows);
+});
+
+app.MapGet("/api/members/{id:int}/notifications/unread-count", async (int id) =>
+{
+    using var db = Db();
+    var count = await db.QueryFirstOrDefaultAsync<int>(
+        "SELECT COUNT(*) FROM Notifications WHERE MemberID = @id AND IsRead = 0", new { id });
+    return Results.Ok(new { count });
+});
+
+app.MapPut("/api/notifications/{id:int}/read", async (int id) =>
+{
+    using var db = Db();
+    await db.ExecuteAsync("UPDATE Notifications SET IsRead = 1 WHERE NotificationID = @id", new { id });
+    return Results.Ok();
+});
+
+app.MapPut("/api/members/{id:int}/notifications/read-all", async (int id) =>
+{
+    using var db = Db();
+    await db.ExecuteAsync("UPDATE Notifications SET IsRead = 1 WHERE MemberID = @id", new { id });
+    return Results.Ok();
 });
 
 // ════════════════════════════════════════════════════════════════════════════
