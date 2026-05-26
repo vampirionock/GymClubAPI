@@ -2,6 +2,7 @@ using Dapper;
 using GymClubAPI.Models;
 using MySqlConnector;
 
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddCors(options =>
